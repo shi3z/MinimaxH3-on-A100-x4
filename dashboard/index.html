@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>H3 Optimization Dashboard</title>
+<style>
+:root{
+  --bg:#0b0f14; --panel:#141b24; --panel2:#1b2530; --line:#243040; --tx:#e6edf3; --dim:#8b9bb0;
+  --accent:#4cc2ff; --good:#3fd08a; --warn:#ffcc4d; --bad:#ff6b6b; --tc:#b48cff;
+  --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.4 -apple-system,system-ui,sans-serif;
+  padding:env(safe-area-inset-top,0) env(safe-area-inset-right,0) env(safe-area-inset-bottom,0) env(safe-area-inset-left,0)}
+h1{font-size:16px;margin:0;font-weight:600}
+.top{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--bad)}
+.dot.on{background:var(--good);box-shadow:0 0 8px var(--good)}
+.muted{color:var(--dim)} .mono{font-family:var(--mono)}
+.grid{display:grid;grid-template-columns:1.35fr 1fr;gap:12px;padding:12px 16px}
+@media(max-width:860px){.grid{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
+.panel h2{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin:0 0 10px}
+.gpus{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
+.gpu{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px}
+.gpu .id{font-weight:600;font-size:13px}
+.bar{height:8px;background:#0d141c;border-radius:5px;overflow:hidden;margin:5px 0}
+.bar>i{display:block;height:100%;background:var(--accent)}
+.kv{display:flex;justify-content:space-between;font-size:12px;margin:2px 0}
+.kv .v{font-family:var(--mono)}
+.ov{display:grid;grid-template-columns:repeat(3,1fr);gap:8px 14px}
+.ov .lab{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}
+.ov .big{font-size:20px;font-family:var(--mono);font-weight:600}
+.stbar{display:flex;height:26px;border-radius:6px;overflow:hidden;border:1px solid var(--line);margin-bottom:10px}
+.stbar>span{height:100%}
+.strow{display:flex;justify-content:space-between;font-size:12px;padding:3px 0;border-bottom:1px solid var(--line)}
+.sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:middle}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+th{color:var(--dim);font-weight:600;font-size:11px;letter-spacing:.05em}
+td.n{font-family:var(--mono);text-align:right}
+.tag{font-size:10px;padding:1px 6px;border-radius:10px;background:#243040;color:var(--dim)}
+.tag.fast{background:rgba(63,208,138,.16);color:var(--good)}
+.tag.cur{background:rgba(76,194,255,.16);color:var(--accent)}
+.up{color:var(--good)} .down{color:var(--bad)}
+svg{display:block;width:100%;height:80px}
+.full{grid-column:1/-1}
+.hint{font-size:11px;color:var(--dim);margin-top:6px}
+</style>
+</head>
+<body>
+<div class="top">
+  <span id="dot" class="dot"></span>
+  <h1>MiniMax&nbsp;H3 · Optimization Dashboard</h1>
+  <span class="muted mono" id="clock" style="margin-left:auto"></span>
+</div>
+
+<div class="grid">
+  <div class="panel">
+    <h2>Live generation</h2>
+    <div class="ov" id="ov"></div>
+    <div class="hint" id="ovhint">waiting for generation events… (run inference with H3_METRICS=1)</div>
+  </div>
+
+  <div class="panel">
+    <h2>Kernel benchmark history</h2>
+    <table><thead><tr><th>kernel</th><th style="text-align:right">latency</th><th style="text-align:right">vs FA2</th><th></th></tr></thead>
+    <tbody id="bench"></tbody></table>
+    <div class="hint" id="benchhint"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Per-stage timing (current step / window)</h2>
+    <div class="stbar" id="stbar"></div>
+    <div id="stlist"></div>
+    <div class="hint">horizontal breakdown · ms &amp; % of measured step time</div>
+  </div>
+
+  <div class="panel">
+    <h2>Attention detail (FA3_SM80_H3 sub-stages)</h2>
+    <div id="attn"></div>
+    <div class="hint">QK / softmax / PV / cp.async wait / barrier — shown when the custom kernel emits them</div>
+  </div>
+
+  <div class="panel full">
+    <h2>GPU monitor (A100 · nvidia-smi, 2s)</h2>
+    <div class="gpus" id="gpus"></div>
+    <div class="hint">SM/Tensor-Core util need DCGM/Nsight — kept as an explicit deeper profiling mode, not always-on.</div>
+  </div>
+
+  <div class="panel full">
+    <h2>Timeline · last 100 measurements</h2>
+    <svg id="tl" viewBox="0 0 1000 80" preserveAspectRatio="none"></svg>
+    <div class="hint" id="tlhint"></div>
+  </div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const fmt=(x,d=1)=>x==null?"—":(+x).toFixed(d);
+const COLORS=["#4cc2ff","#b48cff","#3fd08a","#ffcc4d","#ff6b6b","#57d9d9","#f78fb3","#9aa7ff","#c0d860","#ff9f6b"];
+
+function overview(o){
+  const rows=[["gen id",o.gen_id??"—"],["elapsed",fmt(o.elapsed,1)+"s"],["ETA",o.eta!=null?fmt(o.eta,1)+"s":"—"],
+    ["step",(o.step??0)+" / "+(o.total_steps??"?")],["layer",o.layer??"—"],["seq len",(o.seq_len||0).toLocaleString()],
+    ["kernel",o.kernel??"—"],["dtype",o.dtype??"—"],["step time",o.step_total_ms?fmt(o.step_total_ms,1)+"ms":"—"]];
+  $("ov").innerHTML=rows.map(([l,v])=>`<div><div class="lab">${l}</div><div class="big">${v}</div></div>`).join("");
+  $("ovhint").style.display=o.gen_id?"none":"block";
+}
+function stages(list){
+  const tot=list.reduce((a,s)=>a+s.ms,0)||1;
+  $("stbar").innerHTML=list.map((s,i)=>`<span title="${s.stage}" style="width:${100*s.ms/tot}%;background:${COLORS[i%COLORS.length]}"></span>`).join("");
+  $("stlist").innerHTML=list.map((s,i)=>`<div class="strow"><span><span class="sw" style="background:${COLORS[i%COLORS.length]}"></span>${s.stage}</span><span class="mono">${fmt(s.ms,2)} ms · ${fmt(s.pct,1)}%</span></div>`).join("")||'<div class="muted">no stage events yet</div>';
+  const A=["QK","qk_gemm","softmax","PV","pv_gemm","cp_async_wait","barrier","load","other"];
+  const att=list.filter(s=>A.some(a=>s.stage.toLowerCase().includes(a.toLowerCase())));
+  $("attn").innerHTML=att.length?att.map(s=>`<div class="strow"><span>${s.stage}</span><span class="mono">${fmt(s.ms,3)} ms · ${fmt(s.pct,1)}%</span></div>`).join(""):'<div class="muted">no attention sub-stage events yet</div>';
+}
+function bench(b){
+  const rows=b.rows.map(r=>{
+    const isFast=b.fastest&&r.kernel===b.fastest.kernel;
+    const isCur=b.current&&r.kernel===b.current.kernel;
+    const vs=r.vs_fa2_calc; const cls=vs>1?"up":(vs<1?"down":"");
+    return `<tr><td>${r.kernel} ${isFast?'<span class="tag fast">fastest</span>':''}${isCur?'<span class="tag cur">current</span>':''}</td>
+      <td class="n">${fmt(r.latency_ms,1)} ms</td><td class="n ${cls}">${vs?fmt(vs,2)+"×":"—"}</td>
+      <td class="muted" style="font-size:11px">${r.config||r.note||""}</td></tr>`;
+  }).join("");
+  $("bench").innerHTML=rows;
+  const f=b.fastest;
+  $("benchhint").innerHTML=f?`fastest: <b>${f.kernel}</b> ${fmt(f.latency_ms,1)}ms · FA2 ${fmt(b.fa2_ms,1)}ms · best improvement ${fmt(b.fa2_ms/f.latency_ms,2)}×`:"";
+}
+function gpus(list){
+  $("gpus").innerHTML=list.map(g=>{
+    if(g.index<0) return `<div class="gpu bad">${g.name}</div>`;
+    const memPct=g.mem_total?100*g.mem_used/g.mem_total:0;
+    const tcol=g.temp>82?"var(--bad)":g.temp>72?"var(--warn)":"var(--good)";
+    return `<div class="gpu">
+      <div class="id">GPU ${g.index} <span class="muted" style="font-weight:400;font-size:11px">${(g.name||'').replace('NVIDIA ','')}</span></div>
+      <div class="kv"><span class="muted">util</span><span class="v">${fmt(g.util,0)}%</span></div>
+      <div class="bar"><i style="width:${g.util||0}%"></i></div>
+      <div class="kv"><span class="muted">mem</span><span class="v">${fmt(g.mem_used/1024,1)}/${fmt(g.mem_total/1024,0)} GB</span></div>
+      <div class="bar"><i style="width:${memPct}%;background:var(--tc)"></i></div>
+      <div class="kv"><span class="muted">temp</span><span class="v" style="color:${tcol}">${fmt(g.temp,0)}°C</span></div>
+      <div class="kv"><span class="muted">power</span><span class="v">${fmt(g.power,0)}/${fmt(g.power_limit,0)} W</span></div>
+      <div class="kv"><span class="muted">clock</span><span class="v">${fmt(g.clock,0)}/${fmt(g.clock_max,0)} MHz</span></div>
+    </div>`;
+  }).join("")||'<div class="muted">no GPUs</div>';
+}
+function timeline(tl){
+  if(!tl.length){$("tl").innerHTML="";$("tlhint").textContent="no step-timing events yet";return;}
+  const ms=tl.map(t=>t.ms||0),max=Math.max(...ms,1),n=tl.length,W=1000,H=80;
+  const pts=ms.map((v,i)=>`${(i/(Math.max(n-1,1)))*W},${H-(v/max)*(H-8)-2}`).join(" ");
+  const bars=ms.map((v,i)=>{const w=W/n;return `<rect x="${i*w}" y="${H-(v/max)*(H-8)-2}" width="${Math.max(w-1,1)}" height="${(v/max)*(H-8)}" fill="#4cc2ff" opacity="0.35"/>`}).join("");
+  $("tl").innerHTML=bars+`<polyline points="${pts}" fill="none" stroke="#4cc2ff" stroke-width="1.5"/>`;
+  $("tlhint").textContent=`${n} steps · last ${fmt(ms[ms.length-1],1)}ms · max ${fmt(max,1)}ms · avg ${fmt(ms.reduce((a,b)=>a+b,0)/n,1)}ms`;
+}
+function render(s){
+  $("dot").classList.add("on");$("clock").textContent=new Date(s.ts*1000).toLocaleTimeString();
+  overview(s.overview);stages(s.stages||[]);bench(s.bench);gpus(s.gpus||[]);timeline(s.timeline||[]);
+}
+function connect(){
+  const es=new EventSource("/events");
+  es.onmessage=e=>{try{render(JSON.parse(e.data))}catch(_){}};
+  es.onerror=()=>{$("dot").classList.remove("on");es.close();setTimeout(connect,2000);};
+}
+connect();
+</script>
+</body>
+</html>

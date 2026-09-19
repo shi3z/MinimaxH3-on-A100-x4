@@ -1,0 +1,19 @@
+[
+  {
+    "kernel": "FA2",
+    "latency_ms": 263.1,
+    "vs_fa2": 1.0,
+    "config": "SDPA FLASH bf16",
+    "note": "baseline",
+    "ts": 1789809239.113883,
+    "vs_fa2_calc": 1.0
+  },
+  {
+    "kernel": "FA2",
+    "latency_ms": 268.22,
+    "vs_fa2": 1.0,
+    "config": "SDPA FLASH bf16 (instrumented)",
+    "note": "baseline",
+    "ts": 1789809340.5527713
+  }
+]

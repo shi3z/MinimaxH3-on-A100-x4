@@ -14,6 +14,7 @@ using bf16 = __nv_bfloat16;
 #define BN       64
 #define NWARPS   4
 #define NTHREADS (NWARPS*32)
+#define STAGES   2
 
 __device__ __forceinline__ unsigned smem_u32(const void* p){
     return static_cast<unsigned>(__cvta_generic_to_shared(p));
@@ -99,10 +100,10 @@ extern "C" __global__ void fa3_sm80_h3_kernel(
     bf16* Oh       = O + (long)h*N*D;
 
     extern __shared__ bf16 smem[];
-    bf16* sQ = smem;                 // [BM,D]
-    bf16* sK = sQ + BM*D;            // [BN,D]
-    bf16* sV = sK + BN*D;            // [BN,D]
-    bf16* sP = sV + BN*D;            // [BM,BN]
+    bf16* sQ = smem;                        // [BM,D] (16KB) reused as sP after Q->regs
+    bf16* sK = sQ + BM*D;                    // STAGES x [BN,D]
+    bf16* sV = sK + STAGES*BN*D;             // STAGES x [BN,D]
+    bf16* sP = sQ;                           // reuse Q region for P (8KB <= 16KB)
 
     const int row0 = mtile*BM;
 
@@ -116,6 +117,7 @@ extern "C" __global__ void fa3_sm80_h3_kernel(
     #pragma unroll
     for(int kt=0; kt<8; ++kt)
         ldm_x4(qf[kt], sQ + (warp*16)*D + kt*16, D);
+    __syncthreads();                 // Q consumed; sQ region now free for sP
 
     // ---- per-thread running state (rows g and g+8 of this warp) ----
     float acc[16][4];                // O[16,128] : 16 d-tiles
@@ -124,14 +126,28 @@ extern "C" __global__ void fa3_sm80_h3_kernel(
     float m_lo=-1e30f, m_hi=-1e30f, l_lo=0.f, l_hi=0.f;
 
     const int NT = (N + BN - 1) / BN;
+
+    // prologue: prefetch tile 0 into stage 0
+    load_tile(sK, Kh, 0, N, BN);
+    load_tile(sV, Vh, 0, N, BN);
+    asm volatile("cp.async.commit_group;\n");
+
     for(int j=0;j<NT;++j){
+        int cur = j % STAGES;
+        // prefetch next tile into the other stage
+        if(j+1 < NT){
+            int nb = (j+1) % STAGES;
+            load_tile(sK + nb*BN*D, Kh, (j+1)*BN, N, BN);
+            load_tile(sV + nb*BN*D, Vh, (j+1)*BN, N, BN);
+            asm volatile("cp.async.commit_group;\n");
+            asm volatile("cp.async.wait_group 1;\n");  // keep next in flight, current ready
+        } else {
+            asm volatile("cp.async.wait_group 0;\n");
+        }
+        __syncthreads();
+        bf16* Kc = sK + cur*BN*D;
+        bf16* Vc = sV + cur*BN*D;
         int k0 = j*BN;
-        __syncthreads();
-        load_tile(sK, Kh, k0, N, BN);
-        load_tile(sV, Vh, k0, N, BN);
-        asm volatile("cp.async.commit_group;\n");
-        asm volatile("cp.async.wait_group 0;\n");
-        __syncthreads();
 
         // ---- QK : S[16,64] for this warp ----
         float s[8][4];
@@ -142,7 +158,7 @@ extern "C" __global__ void fa3_sm80_h3_kernel(
             #pragma unroll
             for(int kn=0;kn<4;++kn){       // 4 key-blocks of 16 within BN=64
                 uint32_t r[4];
-                ldm_x4(r, sK + (kn*16)*D + kt*16, D);
+                ldm_x4(r, Kc + (kn*16)*D + kt*16, D);
                 uint32_t b0[2]={r[0],r[2]}; // keys 0-7
                 uint32_t b1[2]={r[1],r[3]}; // keys 8-15
                 mma16816(s[kn*2],   qf[kt], b0);
@@ -227,6 +243,7 @@ extern "C" __global__ void fa3_sm80_h3_kernel(
                 mma16816(acc[dt*2+1], pf[kt2], b1);
             }
         }
+        __syncthreads();   // (E) all reads of Kc/Vc/sP done before buffer reuse/overwrite
     }
 
     // ---- epilogue : O = acc / l, store ----
@@ -250,7 +267,7 @@ void fa3_sm80_h3_launch(torch::Tensor Q, torch::Tensor K, torch::Tensor V, torch
     int H = Q.size(1), N = Q.size(2);
     float scale = 1.0f / sqrtf((float)D);
     dim3 grid((N + BM - 1)/BM, H);
-    int smem_bytes = (BM*D + BN*D + BN*D + BM*BN) * sizeof(bf16);
+    int smem_bytes = (BM*D + 2*STAGES*BN*D) * sizeof(bf16);  // Q/P reuse; K,V x STAGES
     cudaFuncSetAttribute(fa3_sm80_h3_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_bytes);
     fa3_sm80_h3_kernel<<<grid, NTHREADS, smem_bytes>>>(
         (const bf16*)Q.data_ptr(), (const bf16*)K.data_ptr(),
