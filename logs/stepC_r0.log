@@ -1,0 +1,14 @@
+[rank0] loading H3 model on NVIDIA A100 80GB PCIe ...
+[rank0] loaded: 50 blocks, hidden=5376
+[verify Step C SP4] max_err=2.2938e+06 mean_err=2.0079e+03 (ref absmax=16908288.000)
+/mnt/ssdraid/project/comfy-h3/.venv-exp/lib/python3.10/site-packages/torch/distributed/c10d_logger.py:83: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  return func(*args, **kwargs)
+[SP components rank0] total=7305ms sum=7023ms other=282ms
+    attn.softmax       3095.5 ms   42.4%
+    attn.a2a_qkv       2174.7 ms   29.8%
+    attn.a2a_out        800.0 ms   11.0%
+    ffn.fc1             352.9 ms    4.8%
+    attn.qkv            269.7 ms    3.7%
+    ffn.swiglu_fc2      220.9 ms    3.0%
+    attn.out            109.1 ms    1.5%
+[bench Step C SP4] 50-block loop: 7370.3 ms/step  (single-GPU baseline was ~18500 ms)

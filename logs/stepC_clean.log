@@ -1,0 +1,3 @@
+=== rank0 result ===
+[verify Step C SP4] max_err=0.0000e+00 mean_err=0.0000e+00 (ref absmax=16908288.000)
+[bench Step C SP4] 50-block loop: 8860.9 ms/step  (single-GPU baseline was ~18500 ms)

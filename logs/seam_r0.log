@@ -1,0 +1,5 @@
+[sp_runtime] installed (WORLD=4) — run_blocks + Ulysses attention patched
+[seam SP verify WORLD=4] max_err=0.0000e+00 mean_err=0.0000e+00
+/mnt/ssdraid/project/comfy-h3/.venv-exp/lib/python3.10/site-packages/torch/distributed/c10d_logger.py:83: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  return func(*args, **kwargs)
+[seam SP bench WORLD=4] run_blocks: 5815.8 ms  (1-GPU baseline 18661 ms)

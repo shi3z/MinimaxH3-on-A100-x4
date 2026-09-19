@@ -1,0 +1,4 @@
+[rank0] loading H3 model on NVIDIA A100 80GB PCIe ...
+[rank0] loaded: 50 blocks, hidden=5376
+[verify Step B] max_err=0.0000e+00 mean_err=0.0000e+00 (ref absmax=16908288.000)
+[bench Step B] 50-block loop single-GPU: 18661.2 ms

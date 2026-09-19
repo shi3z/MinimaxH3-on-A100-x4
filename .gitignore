@@ -1,0 +1,6 @@
+# Large captured tensors (I/O ground truth, ~855MB) — regenerate with bench/capture_gen.py + H3_DUMP=1
+*.pt
+# Python
+__pycache__/
+*.pyc
+.venv*/

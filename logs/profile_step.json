@@ -1,0 +1,25 @@
+{
+  "target_idx": 2,
+  "total_forward_ms": 20197.699,
+  "components_ms": {
+    "adaln": 3.5,
+    "attn.qkv": 1352.217,
+    "attn.qknorm_rope": 295.652,
+    "attn.softmax": 13786.932,
+    "attn.out": 459.162,
+    "ffn.fc1": 1540.365,
+    "ffn.swiglu_fc2": 1072.338
+  },
+  "sum_components_ms": 18510.166,
+  "other_ms": 1687.533,
+  "components_pct": {
+    "adaln": 0.0,
+    "attn.qkv": 6.7,
+    "attn.qknorm_rope": 1.5,
+    "attn.softmax": 68.3,
+    "attn.out": 2.3,
+    "ffn.fc1": 7.6,
+    "ffn.swiglu_fc2": 5.3
+  },
+  "num_blocks": 50
+}

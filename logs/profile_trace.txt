@@ -1,0 +1,46 @@
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                     aten::scaled_dot_product_attention         0.00%     923.138us         0.03%       5.328ms     106.557us       0.000us         0.00%       13.787s     275.735ms            50  
+              aten::_scaled_dot_product_flash_attention         0.00%     451.287us         0.02%       4.150ms      82.992us       0.000us         0.00%       13.787s     275.735ms            50  
+                         aten::_flash_attention_forward         0.00%     942.213us         0.02%       3.378ms      67.554us       13.787s        70.93%       13.787s     275.735ms            50  
+void pytorch_flash::flash_fwd_kernel<Flash_fwd_kerne...         0.00%       0.000us         0.00%       0.000us       0.000us       13.787s        70.93%       13.787s     275.735ms            50  
+                                           aten::linear         0.00%     465.606us         0.20%      38.385ms     187.245us       0.000us         0.00%        3.355s      16.365ms           205  
+                                         PythonSubclass         0.03%       6.662ms         0.19%      37.054ms     123.514us       0.000us         0.00%        3.349s      11.165ms           300  
+                             comfy_kitchen::int8_linear         0.12%      23.218ms         0.16%      30.392ms     202.615us        3.349s        17.23%        3.349s      22.330ms           150  
+void cutlass::Kernel2<cutlass::gemm::kernel::Default...         0.00%       0.000us         0.00%       0.000us       0.000us        2.297s        11.82%        2.297s      15.312ms           150  
+void cutlass::Kernel2<cutlass::gemm::kernel::Default...         0.00%       0.000us         0.00%       0.000us       0.000us        1.433s         7.37%        1.433s      28.657ms            50  
+                                          cudaFreeAsync         0.05%       8.724ms         0.05%       8.724ms       1.351us     968.312ms         4.98%     968.312ms     149.963us          6457  
+                                            aten::copy_         0.09%      17.181ms        20.44%        3.960s     977.428us     456.555ms         2.35%     457.324ms     112.892us          4051  
+                                               aten::to         0.02%       4.331ms        20.63%        3.996s     950.796us       0.000us         0.00%     456.696ms     108.660us          4203  
+                                         aten::_to_copy         0.04%       7.970ms        20.60%        3.989s     988.184us       0.000us         0.00%     456.696ms     113.128us          4037  
+                       Memcpy DtoH (Device -> Pageable)         0.00%       0.000us         0.00%       0.000us       0.000us     443.550ms         2.28%     443.550ms     110.887ms             4  
+void comfy::(anonymous namespace)::quantize_int8_row...         0.00%       0.000us         0.00%       0.000us       0.000us     347.471ms         1.79%     347.471ms       6.949ms            50  
+void comfy::(anonymous namespace)::quantize_int8_row...         0.00%       0.000us         0.00%       0.000us       0.000us     343.859ms         1.77%     343.859ms       2.292ms           150  
+                    comfy_kitchen::rms_rope_split_half_         0.04%       7.939ms         0.04%       8.314ms     166.284us     295.417ms         1.52%     295.417ms       5.908ms            50  
+void comfy::(anonymous namespace)::rope_kernel<__nv_...         0.00%       0.000us         0.00%       0.000us       0.000us     295.417ms         1.52%     295.417ms       5.908ms            50  
+                                         aten::addcmul_         0.03%       6.430ms         0.06%      11.215ms       8.627us     146.291ms         0.75%     146.291ms     112.531us          1300  
+void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     146.291ms         0.75%     146.291ms     112.531us          1300  
+                                             aten::mul_         0.03%       5.228ms         1.81%     351.473ms     270.364us     128.596ms         0.66%     130.833ms     100.641us          1300  
+void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     128.596ms         0.66%     128.596ms      98.920us          1300  
+                                             aten::add_         0.02%       4.820ms        10.81%        2.093s       1.610ms     121.739ms         0.63%     125.602ms      96.617us          1300  
+void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     121.739ms         0.63%     121.739ms      93.645us          1300  
+                                         aten::rms_norm         0.00%     859.656us         0.02%       4.142ms      40.607us       0.000us         0.00%      69.840ms     684.706us           102  
+                                  aten::_fused_rms_norm         0.01%       1.195ms         0.02%       3.139ms      30.777us      69.840ms         0.36%      69.840ms     684.706us           102  
+void at::native::(anonymous namespace)::vectorized_l...         0.00%       0.000us         0.00%       0.000us       0.000us      69.840ms         0.36%      69.840ms     684.706us           102  
+                               cudaEventRecordWithFlags         0.01%       2.056ms         0.01%       2.056ms       2.921us      37.722ms         0.19%      37.722ms      53.582us           704  
+                                Activity Buffer Request         0.03%       5.064ms         0.04%       6.912ms       2.304ms       0.000us         0.00%      35.167ms      11.722ms             3  
+                                  cudaStreamIsCapturing         0.00%     317.129us         0.00%     317.129us       0.443us      17.471ms         0.09%      17.471ms      24.401us           716  
+void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      11.415ms         0.06%      11.415ms       2.924us          3904  
+                                       cudaLaunchKernel         0.22%      41.737ms        87.00%       16.850s       1.694ms      16.128us         0.00%       7.472ms       0.751us          9949  
+                                    Command Buffer Full        86.79%       16.808s        86.79%       16.808s      18.717ms       7.456ms         0.04%       7.456ms       8.302us           898  
+                                            aten::addmm         0.01%       2.359ms         0.02%       3.166ms      57.568us       5.379ms         0.03%       5.379ms      97.796us            55  
+                                              aten::add         0.05%       9.500ms        66.19%       12.819s       9.763ms       4.239ms         0.02%       4.824ms       3.674us          1313  
+void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       3.258ms         0.02%       3.258ms       2.506us          1300  
+                                 ampere_sgemm_32x128_tn         0.00%       0.000us         0.00%       0.000us       0.000us       2.230ms         0.01%       2.230ms       2.230ms             1  
+                                 ampere_sgemm_128x64_tn         0.00%       0.000us         0.00%       0.000us       0.000us       2.208ms         0.01%       2.208ms       2.208ms             1  
+                                              aten::mul         0.00%     759.574us         0.00%     894.617us      47.085us       1.267ms         0.01%       1.267ms      66.704us            19  
+void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us       1.234ms         0.01%       1.234ms     617.110us             2  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 19.367s
+Self CUDA time total: 19.438s
