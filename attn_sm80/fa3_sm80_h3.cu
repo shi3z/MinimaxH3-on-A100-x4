@@ -14,7 +14,9 @@ using bf16 = __nv_bfloat16;
 #define BN       64
 #define NWARPS   4
 #define NTHREADS (NWARPS*32)
+#ifndef STAGES
 #define STAGES   2
+#endif
 
 __device__ __forceinline__ unsigned smem_u32(const void* p){
     return static_cast<unsigned>(__cvta_generic_to_shared(p));
@@ -81,8 +83,14 @@ __device__ __forceinline__ float warp_row_sum4(float v){
     return v;
 }
 
+__device__ unsigned long long g_prof[5];  // wait, qk, softmax, pv, epilogue (cycles, CTA0)
+
+#ifndef MINCTA
+#define MINCTA 2
+#endif
+
 // grid = (num_m_tiles, H), block = NTHREADS
-extern "C" __global__ void fa3_sm80_h3_kernel(
+extern "C" __global__ void __launch_bounds__(NTHREADS, MINCTA) fa3_sm80_h3_kernel(
         const bf16* __restrict__ Q, const bf16* __restrict__ K,
         const bf16* __restrict__ V, bf16* __restrict__ O,
         int N, float scale)
@@ -127,24 +135,35 @@ extern "C" __global__ void fa3_sm80_h3_kernel(
 
     const int NT = (N + BN - 1) / BN;
 
-    // prologue: prefetch tile 0 into stage 0
+#if STAGES>1
+    // prologue: load tile 0 into buffer 0
     load_tile(sK, Kh, 0, N, BN);
     load_tile(sV, Vh, 0, N, BN);
     asm volatile("cp.async.commit_group;\n");
+#endif
 
+    const bool prof = (blockIdx.x==0 && blockIdx.y==0 && threadIdx.x==0);
     for(int j=0;j<NT;++j){
+        long long c0=clock64();
         int cur = j % STAGES;
-        // prefetch next tile into the other stage
+#if STAGES>1
         if(j+1 < NT){
             int nb = (j+1) % STAGES;
             load_tile(sK + nb*BN*D, Kh, (j+1)*BN, N, BN);
             load_tile(sV + nb*BN*D, Vh, (j+1)*BN, N, BN);
             asm volatile("cp.async.commit_group;\n");
-            asm volatile("cp.async.wait_group 1;\n");  // keep next in flight, current ready
+            asm volatile("cp.async.wait_group %0;\n" :: "n"(STAGES-1));
         } else {
             asm volatile("cp.async.wait_group 0;\n");
         }
+#else
+        load_tile(sK, Kh, j*BN, N, BN);
+        load_tile(sV, Vh, j*BN, N, BN);
+        asm volatile("cp.async.commit_group;\n");
+        asm volatile("cp.async.wait_group 0;\n");
+#endif
         __syncthreads();
+        long long c1=clock64();
         bf16* Kc = sK + cur*BN*D;
         bf16* Vc = sV + cur*BN*D;
         int k0 = j*BN;
@@ -155,17 +174,20 @@ extern "C" __global__ void fa3_sm80_h3_kernel(
         for(int nt=0;nt<8;++nt){ s[nt][0]=s[nt][1]=s[nt][2]=s[nt][3]=0.f; }
         #pragma unroll
         for(int kt=0;kt<8;++kt){
+            uint32_t kf[4][4];
             #pragma unroll
-            for(int kn=0;kn<4;++kn){       // 4 key-blocks of 16 within BN=64
-                uint32_t r[4];
-                ldm_x4(r, Kc + (kn*16)*D + kt*16, D);
-                uint32_t b0[2]={r[0],r[2]}; // keys 0-7
-                uint32_t b1[2]={r[1],r[3]}; // keys 8-15
+            for(int kn=0;kn<4;++kn)        // batch all 4 ldmatrix (overlap latency)
+                ldm_x4(kf[kn], Kc + (kn*16)*D + kt*16, D);
+            #pragma unroll
+            for(int kn=0;kn<4;++kn){
+                uint32_t b0[2]={kf[kn][0],kf[kn][2]}; // keys 0-7
+                uint32_t b1[2]={kf[kn][1],kf[kn][3]}; // keys 8-15
                 mma16816(s[kn*2],   qf[kt], b0);
                 mma16816(s[kn*2+1], qf[kt], b1);
             }
         }
 
+        long long c2=clock64();
         // scale + tail mask (key >= N -> -inf)
         #pragma unroll
         for(int nt=0;nt<8;++nt){
@@ -214,36 +236,42 @@ extern "C" __global__ void fa3_sm80_h3_kernel(
             acc[i][2]*=al_hi; acc[i][3]*=al_hi;
         }
 
-        // write P (bf16) to smem in row-major [BM,BN]
-        #pragma unroll
-        for(int nt=0;nt<8;++nt){
-            int col = nt*8 + 2*t;
-            bf16* pr_lo = sP + (warp*16 + g)*BN + col;
-            bf16* pr_hi = sP + (warp*16 + g+8)*BN + col;
-            pr_lo[0]=__float2bfloat16(s[nt][0]); pr_lo[1]=__float2bfloat16(s[nt][1]);
-            pr_hi[0]=__float2bfloat16(s[nt][2]); pr_hi[1]=__float2bfloat16(s[nt][3]);
-        }
-        __syncthreads();
+        long long c3=clock64();
 
         // ---- PV : O[16,128] += P[16,64] @ V[64,128] ----
-        uint32_t pf[4][4];  // 4 key-tiles of P as A-frag [16,16]
+        // Build P A-fragments DIRECTLY from the softmax accumulator registers:
+        // the mma accumulator layout (m16n8) == A-operand layout (m16k16), same
+        // (groupID,tid) mapping, so no smem roundtrip / ldmatrix / shuffle needed.
+        uint32_t pf[4][4];
         #pragma unroll
-        for(int kt2=0;kt2<4;++kt2)
-            ldm_x4(pf[kt2], sP + (warp*16)*BN + kt2*16, BN);
+        for(int kt2=0;kt2<4;++kt2){
+            __nv_bfloat162 q0=__floats2bfloat162_rn(s[2*kt2][0],   s[2*kt2][1]);
+            __nv_bfloat162 q1=__floats2bfloat162_rn(s[2*kt2][2],   s[2*kt2][3]);
+            __nv_bfloat162 q2=__floats2bfloat162_rn(s[2*kt2+1][0], s[2*kt2+1][1]);
+            __nv_bfloat162 q3=__floats2bfloat162_rn(s[2*kt2+1][2], s[2*kt2+1][3]);
+            pf[kt2][0]=*reinterpret_cast<uint32_t*>(&q0);
+            pf[kt2][1]=*reinterpret_cast<uint32_t*>(&q1);
+            pf[kt2][2]=*reinterpret_cast<uint32_t*>(&q2);
+            pf[kt2][3]=*reinterpret_cast<uint32_t*>(&q3);
+        }
 
         #pragma unroll
         for(int kt2=0;kt2<4;++kt2){
+            uint32_t vf[8][4];
             #pragma unroll
-            for(int dt=0;dt<8;++dt){       // 8 blocks of 16 in D=128
-                uint32_t r[4];
-                ldm_x4_trans(r, sV + (kt2*16)*D + dt*16, D);
-                uint32_t b0[2]={r[0],r[1]}; // d 0-7
-                uint32_t b1[2]={r[2],r[3]}; // d 8-15
+            for(int dt=0;dt<8;++dt)        // batch all 8 V ldmatrix (overlap latency)
+                ldm_x4_trans(vf[dt], Vc + (kt2*16)*D + dt*16, D);
+            #pragma unroll
+            for(int dt=0;dt<8;++dt){
+                uint32_t b0[2]={vf[dt][0],vf[dt][1]}; // d 0-7
+                uint32_t b1[2]={vf[dt][2],vf[dt][3]}; // d 8-15
                 mma16816(acc[dt*2],   pf[kt2], b0);
                 mma16816(acc[dt*2+1], pf[kt2], b1);
             }
         }
         __syncthreads();   // (E) all reads of Kc/Vc/sP done before buffer reuse/overwrite
+        if(prof){ long long c4=clock64();
+            g_prof[0]+=c1-c0; g_prof[1]+=c2-c1; g_prof[2]+=c3-c2; g_prof[3]+=c4-c3; }
     }
 
     // ---- epilogue : O = acc / l, store ----
@@ -268,7 +296,9 @@ void fa3_sm80_h3_launch(torch::Tensor Q, torch::Tensor K, torch::Tensor V, torch
     float scale = 1.0f / sqrtf((float)D);
     dim3 grid((N + BM - 1)/BM, H);
     int smem_bytes = (BM*D + 2*STAGES*BN*D) * sizeof(bf16);  // Q/P reuse; K,V x STAGES
-    cudaFuncSetAttribute(fa3_sm80_h3_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_bytes);
+    cudaError_t e = cudaFuncSetAttribute(fa3_sm80_h3_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_bytes);
+    static int printed=0;
+    if(!printed){ printed=1; printf("[fa3] smem_bytes=%d setattr=%s\n", smem_bytes, cudaGetErrorString(e)); }
     fa3_sm80_h3_kernel<<<grid, NTHREADS, smem_bytes>>>(
         (const bf16*)Q.data_ptr(), (const bf16*)K.data_ptr(),
         (const bf16*)V.data_ptr(), (bf16*)O.data_ptr(), N, scale);
@@ -332,8 +362,22 @@ void test_pv_launch(torch::Tensor P, torch::Tensor V, torch::Tensor O){
     test_pv<<<1,32,sm>>>((const bf16*)P.data_ptr(),(const bf16*)V.data_ptr(),O.data_ptr<float>());
 }
 
+torch::Tensor get_prof(){
+    unsigned long long h[5];
+    cudaMemcpyFromSymbol(h, g_prof, sizeof(h));
+    auto t = torch::empty({5}, torch::kFloat64);
+    for(int i=0;i<5;++i) t[i]=(double)h[i];
+    return t;
+}
+void reset_prof(){
+    unsigned long long z[5]={0,0,0,0,0};
+    cudaMemcpyToSymbol(g_prof, z, sizeof(z));
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m){
     m.def("fa3", &fa3_sm80_h3_launch, "FA3_SM80_H3");
+    m.def("get_prof", &get_prof, "phase cycles");
+    m.def("reset_prof", &reset_prof, "reset");
     m.def("test_qk", &test_qk_launch, "test qk");
     m.def("test_pv", &test_pv_launch, "test pv");
 }

@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BENCH_FILE = os.path.join(HERE, "bench_history.json")
-PORT = 8765
+PORT = 8770          # 8765 is reserved — do not use it
 FA2_BASELINE_MS = 263.1
 
 # ---------------- state ----------------

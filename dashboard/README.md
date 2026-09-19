@@ -3,9 +3,9 @@
 Live view of MiniMax-H3 optimization on tsuginosuke. No Grafana/Prometheus — stdlib only.
 
 ## Run
-    python3 dashboard/server.py --port 8765 --bind auto
+    python3 dashboard/server.py --port 8770 --bind auto
 Binds to the Tailscale IP (falls back to 0.0.0.0). Open on the iPad (same tailnet):
-    http://<tailscale-ip>:8765     e.g. http://100.126.237.55:8765
+    http://<tailscale-ip>:8770     e.g. http://100.126.237.55:8770
 Landscape. Live via SSE.
 
 ## Panels
@@ -17,7 +17,7 @@ Landscape. Live via SSE.
 - Timeline (last 100 measurements; spikes/regressions at a glance)
 
 ## Instrument inference (see dashboard/h3_metrics.py)
-    export H3_METRICS=1 H3_DASH_URL=http://100.126.237.55:8765
+    export H3_METRICS=1 H3_DASH_URL=http://100.126.237.55:8770
     import h3_metrics as M
     M.set_context(gen_id=..., kernel="FA3_SM80_H3_v1", seq_len=N, step=s, total_steps=50, layer=l)
     with M.stage("attention"): ...        # CUDA-event timed, async-collected (no hot-path sync)

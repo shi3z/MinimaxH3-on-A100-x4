@@ -16,7 +16,7 @@ import os, time, json, threading, collections, urllib.request
 
 ENABLED = os.environ.get("H3_METRICS", "0") == "1"
 DEBUG = os.environ.get("H3_METRICS_DEBUG", "0") == "1"
-DASH_URL = os.environ.get("H3_DASH_URL", "http://127.0.0.1:8765").rstrip("/")
+DASH_URL = os.environ.get("H3_DASH_URL", "http://100.126.237.55:8770").rstrip("/")  # tailnet dashboard (8765 reserved)
 GPU_ID = int(os.environ.get("H3_METRICS_GPU", os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")[0] or "0"))
 
 _ctx = {"gen_id": None, "step": 0, "total_steps": 0, "layer": 0, "seq_len": 0, "kernel": "FA2", "dtype": "bf16"}

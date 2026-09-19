@@ -1,7 +1,7 @@
 # Instrumented FA2 baseline: emits per-stage CUDA-event timings + a bench record to the dashboard.
 import os, sys, time
 os.environ.setdefault("H3_METRICS","1")
-os.environ.setdefault("H3_DASH_URL","http://100.126.237.55:8765")
+os.environ.setdefault("H3_DASH_URL","http://100.126.237.55:8770")
 sys.path.insert(0, os.path.dirname(__file__)); sys.path.insert(0, os.path.join(os.path.dirname(__file__),".."))
 import torch
 from torch.nn.attention import SDPBackend, sdpa_kernel
