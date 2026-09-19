@@ -17,6 +17,10 @@ using bf16 = __nv_bfloat16;
 #ifndef STAGES
 #define STAGES   2
 #endif
+#ifndef PAD
+#define PAD      0
+#endif
+#define SD       (D+PAD)    // smem row stride (padded to break ldmatrix bank conflicts)
 
 __device__ __forceinline__ unsigned smem_u32(const void* p){
     return static_cast<unsigned>(__cvta_generic_to_shared(p));
@@ -65,7 +69,7 @@ __device__ __forceinline__ void load_tile(bf16* smem, const bf16* g_base, int ro
     const int VECS = ROWS*16;               // D/8 = 16 vecs per row
     for(int vi=threadIdx.x; vi<VECS; vi+=NTHREADS){
         int r = vi >> 4, c8 = (vi & 15)*8;
-        bf16* dst = smem + r*D + c8;
+        bf16* dst = smem + r*SD + c8;         // padded smem row stride
         int grow = row0 + r;
         if(grow < N) cp16(dst, g_base + grow*D + c8);
         else *reinterpret_cast<uint4*>(dst) = make_uint4(0,0,0,0);
@@ -108,10 +112,11 @@ extern "C" __global__ void __launch_bounds__(NTHREADS, MINCTA) fa3_sm80_h3_kerne
     bf16* Oh       = O + (long)h*N*D;
 
     extern __shared__ bf16 smem[];
-    bf16* sQ = smem;                        // [BM,D] (16KB) reused as sP after Q->regs
-    bf16* sK = sQ + BM*D;                    // STAGES x [BN,D]
-    bf16* sV = sK + STAGES*BN*D;             // STAGES x [BN,D]
-    bf16* sP = sQ;                           // reuse Q region for P (8KB <= 16KB)
+    // Q is only needed before the KV loop (loaded -> ldmatrix -> registers), so its
+    // smem is UNIONED with the K buffers (BM*SD <= STAGES*BN*SD) to save occupancy.
+    bf16* sQ = smem;
+    bf16* sK = smem;                          // STAGES x [BN,D] (reuses Q region)
+    bf16* sV = sK + STAGES*BN*SD;             // STAGES x [BN,D]
 
     const int row0 = mtile*BM;
 
@@ -124,7 +129,7 @@ extern "C" __global__ void __launch_bounds__(NTHREADS, MINCTA) fa3_sm80_h3_kerne
     uint32_t qf[8][4];               // 8 k-tiles of D, A-frag [16,16]
     #pragma unroll
     for(int kt=0; kt<8; ++kt)
-        ldm_x4(qf[kt], sQ + (warp*16)*D + kt*16, D);
+        ldm_x4(qf[kt], sQ + (warp*16)*SD + kt*16, SD);
     __syncthreads();                 // Q consumed; sQ region now free for sP
 
     // ---- per-thread running state (rows g and g+8 of this warp) ----
@@ -149,8 +154,8 @@ extern "C" __global__ void __launch_bounds__(NTHREADS, MINCTA) fa3_sm80_h3_kerne
 #if STAGES>1
         if(j+1 < NT){
             int nb = (j+1) % STAGES;
-            load_tile(sK + nb*BN*D, Kh, (j+1)*BN, N, BN);
-            load_tile(sV + nb*BN*D, Vh, (j+1)*BN, N, BN);
+            load_tile(sK + nb*BN*SD, Kh, (j+1)*BN, N, BN);
+            load_tile(sV + nb*BN*SD, Vh, (j+1)*BN, N, BN);
             asm volatile("cp.async.commit_group;\n");
             asm volatile("cp.async.wait_group %0;\n" :: "n"(STAGES-1));
         } else {
@@ -164,8 +169,8 @@ extern "C" __global__ void __launch_bounds__(NTHREADS, MINCTA) fa3_sm80_h3_kerne
 #endif
         __syncthreads();
         long long c1=clock64();
-        bf16* Kc = sK + cur*BN*D;
-        bf16* Vc = sV + cur*BN*D;
+        bf16* Kc = sK + cur*BN*SD;
+        bf16* Vc = sV + cur*BN*SD;
         int k0 = j*BN;
 
         // ---- QK : S[16,64] for this warp ----
@@ -177,7 +182,7 @@ extern "C" __global__ void __launch_bounds__(NTHREADS, MINCTA) fa3_sm80_h3_kerne
             uint32_t kf[4][4];
             #pragma unroll
             for(int kn=0;kn<4;++kn)        // batch all 4 ldmatrix (overlap latency)
-                ldm_x4(kf[kn], Kc + (kn*16)*D + kt*16, D);
+                ldm_x4(kf[kn], Kc + (kn*16)*SD + kt*16, SD);
             #pragma unroll
             for(int kn=0;kn<4;++kn){
                 uint32_t b0[2]={kf[kn][0],kf[kn][2]}; // keys 0-7
@@ -260,7 +265,7 @@ extern "C" __global__ void __launch_bounds__(NTHREADS, MINCTA) fa3_sm80_h3_kerne
             uint32_t vf[8][4];
             #pragma unroll
             for(int dt=0;dt<8;++dt)        // batch all 8 V ldmatrix (overlap latency)
-                ldm_x4_trans(vf[dt], Vc + (kt2*16)*D + dt*16, D);
+                ldm_x4_trans(vf[dt], Vc + (kt2*16)*SD + dt*16, SD);
             #pragma unroll
             for(int dt=0;dt<8;++dt){
                 uint32_t b0[2]={vf[dt][0],vf[dt][1]}; // d 0-7
@@ -295,7 +300,7 @@ void fa3_sm80_h3_launch(torch::Tensor Q, torch::Tensor K, torch::Tensor V, torch
     int H = Q.size(1), N = Q.size(2);
     float scale = 1.0f / sqrtf((float)D);
     dim3 grid((N + BM - 1)/BM, H);
-    int smem_bytes = (BM*D + 2*STAGES*BN*D) * sizeof(bf16);  // Q/P reuse; K,V x STAGES
+    int smem_bytes = (2*STAGES*BN*SD) * sizeof(bf16);  // Q unioned into K; K,V x STAGES
     cudaError_t e = cudaFuncSetAttribute(fa3_sm80_h3_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_bytes);
     static int printed=0;
     if(!printed){ printed=1; printf("[fa3] smem_bytes=%d setattr=%s\n", smem_bytes, cudaGetErrorString(e)); }

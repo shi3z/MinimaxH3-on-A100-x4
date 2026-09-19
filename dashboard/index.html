@@ -1,169 +1,199 @@
 <!doctype html>
-<html lang="en">
-<head>
+<html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>H3 Optimization Dashboard</title>
+<title>H3 Perf Console</title>
 <style>
-:root{
-  --bg:#0b0f14; --panel:#141b24; --panel2:#1b2530; --line:#243040; --tx:#e6edf3; --dim:#8b9bb0;
-  --accent:#4cc2ff; --good:#3fd08a; --warn:#ffcc4d; --bad:#ff6b6b; --tc:#b48cff;
-  --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
-}
+:root{--bg:#0a0e13;--pnl:#121820;--pnl2:#0d131a;--line:#232f3d;--tx:#dfe8f0;--dim:#7f90a4;
+--accent:#4cc2ff;--good:#3fd08a;--warn:#ffcc4d;--bad:#ff5d5d;--mono:"SF Mono",ui-monospace,Menlo,monospace;}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.4 -apple-system,system-ui,sans-serif;
-  padding:env(safe-area-inset-top,0) env(safe-area-inset-right,0) env(safe-area-inset-bottom,0) env(safe-area-inset-left,0)}
-h1{font-size:16px;margin:0;font-weight:600}
-.top{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
-.dot{width:9px;height:9px;border-radius:50%;background:var(--bad)}
-.dot.on{background:var(--good);box-shadow:0 0 8px var(--good)}
-.muted{color:var(--dim)} .mono{font-family:var(--mono)}
-.grid{display:grid;grid-template-columns:1.35fr 1fr;gap:12px;padding:12px 16px}
-@media(max-width:860px){.grid{grid-template-columns:1fr}}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
-.panel h2{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin:0 0 10px}
-.gpus{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
-.gpu{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px}
-.gpu .id{font-weight:600;font-size:13px}
-.bar{height:8px;background:#0d141c;border-radius:5px;overflow:hidden;margin:5px 0}
-.bar>i{display:block;height:100%;background:var(--accent)}
-.kv{display:flex;justify-content:space-between;font-size:12px;margin:2px 0}
-.kv .v{font-family:var(--mono)}
-.ov{display:grid;grid-template-columns:repeat(3,1fr);gap:8px 14px}
-.ov .lab{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}
-.ov .big{font-size:20px;font-family:var(--mono);font-weight:600}
-.stbar{display:flex;height:26px;border-radius:6px;overflow:hidden;border:1px solid var(--line);margin-bottom:10px}
-.stbar>span{height:100%}
-.strow{display:flex;justify-content:space-between;font-size:12px;padding:3px 0;border-bottom:1px solid var(--line)}
-.sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:middle}
-table{width:100%;border-collapse:collapse;font-size:13px}
-th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
-th{color:var(--dim);font-weight:600;font-size:11px;letter-spacing:.05em}
-td.n{font-family:var(--mono);text-align:right}
-.tag{font-size:10px;padding:1px 6px;border-radius:10px;background:#243040;color:var(--dim)}
-.tag.fast{background:rgba(63,208,138,.16);color:var(--good)}
-.tag.cur{background:rgba(76,194,255,.16);color:var(--accent)}
-.up{color:var(--good)} .down{color:var(--bad)}
-svg{display:block;width:100%;height:80px}
-.full{grid-column:1/-1}
-.hint{font-size:11px;color:var(--dim);margin-top:6px}
-</style>
-</head>
-<body>
-<div class="top">
-  <span id="dot" class="dot"></span>
-  <h1>MiniMax&nbsp;H3 · Optimization Dashboard</h1>
-  <span class="muted mono" id="clock" style="margin-left:auto"></span>
-</div>
+body{margin:0;background:var(--bg);color:var(--tx);font:12px/1.35 -apple-system,system-ui,sans-serif;
+padding:env(safe-area-inset-top,0) env(safe-area-inset-right,0) env(safe-area-inset-bottom,0) env(safe-area-inset-left,0)}
+.mono{font-family:var(--mono)} .dim{color:var(--dim)} .r{text-align:right}
+.top{display:flex;gap:10px;align-items:center;padding:6px 12px;background:var(--pnl);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:9}
+.top b{font-size:13px}.dot{width:8px;height:8px;border-radius:50%;background:var(--bad)}.dot.on{background:var(--good)}
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:8px;padding:8px 12px}
+.p{background:var(--pnl);border:1px solid var(--line);border-radius:8px;padding:8px 10px;overflow:hidden}
+.p h2{margin:0 0 6px;font-size:10px;letter-spacing:.07em;text-transform:uppercase;color:var(--dim);font-weight:700}
+.c12{grid-column:span 12}.c8{grid-column:span 8}.c6{grid-column:span 6}.c4{grid-column:span 4}.c3{grid-column:span 3}
+@media(max-width:1100px){.c8,.c6,.c4,.c3{grid-column:span 12}}
+table{width:100%;border-collapse:collapse}th,td{padding:2px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--dim);font-size:10px;text-transform:uppercase;font-weight:700;text-align:left}
+td.n,th.n{text-align:right;font-family:var(--mono)}
+.warn{background:rgba(255,93,93,.12);border:1px solid rgba(255,93,93,.4);color:#ffb3b3;border-radius:6px;padding:5px 9px;margin:2px 0;font-size:12px}
+.warn.y{background:rgba(255,204,77,.12);border-color:rgba(255,204,77,.4);color:#ffe08a}
+.stack{display:flex;height:22px;border-radius:5px;overflow:hidden;border:1px solid var(--line);margin-bottom:6px}
+.stack>span{height:100%}
+.chip{display:inline-block;padding:1px 7px;border-radius:9px;background:#1d2836;color:var(--dim);font-size:10px;cursor:pointer;margin:1px}
+.chip.on{background:var(--accent);color:#04121c;font-weight:700}
+.sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:middle}
+.hm{display:grid;gap:1px}.hm i{height:11px;border-radius:1px}
+.big{font-family:var(--mono);font-size:16px;font-weight:700}
+.up{color:var(--good)}.down{color:var(--bad)}
+.bignum{font-family:var(--mono);font-size:13px}
+svg{display:block;width:100%}
+.flex{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.tag{font-size:9px;padding:0 5px;border-radius:8px;background:#233}.tag.fast{background:rgba(63,208,138,.18);color:var(--good)}
+.na{color:#5a6b7d;font-style:italic}
+</style></head><body>
+<div class="top"><span id="dot" class="dot"></span><b>MiniMax&nbsp;H3 · Perf Console</b>
+<span class="dim mono" id="hdr"></span><span class="dim mono" id="clock" style="margin-left:auto"></span></div>
 
 <div class="grid">
-  <div class="panel">
-    <h2>Live generation</h2>
-    <div class="ov" id="ov"></div>
-    <div class="hint" id="ovhint">waiting for generation events… (run inference with H3_METRICS=1)</div>
-  </div>
+  <div class="p c12" id="warnbox" style="display:none"></div>
 
-  <div class="panel">
-    <h2>Kernel benchmark history</h2>
-    <table><thead><tr><th>kernel</th><th style="text-align:right">latency</th><th style="text-align:right">vs FA2</th><th></th></tr></thead>
-    <tbody id="bench"></tbody></table>
-    <div class="hint" id="benchhint"></div>
-  </div>
+  <div class="p c4"><h2>Top bottlenecks (this step)</h2><div id="bott"></div></div>
+  <div class="p c4"><h2>Amdahl — max end-to-end gain</h2><div id="amdahl"></div></div>
+  <div class="p c4"><h2>Current vs Previous vs Best</h2><div id="cmp"></div></div>
 
-  <div class="panel">
-    <h2>Per-stage timing (current step / window)</h2>
-    <div class="stbar" id="stbar"></div>
-    <div id="stlist"></div>
-    <div class="hint">horizontal breakdown · ms &amp; % of measured step time</div>
-  </div>
+  <div class="p c6"><h2>Step breakdown <span class="dim" id="stepsel"></span></h2>
+    <div class="stack" id="stack"></div><div id="stbl"></div></div>
+  <div class="p c6"><h2>Steps</h2><div id="steps"></div></div>
 
-  <div class="panel">
-    <h2>Attention detail (FA3_SM80_H3 sub-stages)</h2>
-    <div id="attn"></div>
-    <div class="hint">QK / softmax / PV / cp.async wait / barrier — shown when the custom kernel emits them</div>
-  </div>
+  <div class="p c6"><h2>Layers (selected step) — click to inspect</h2><div id="layers" style="max-height:280px;overflow:auto"></div></div>
+  <div class="p c6"><h2>Per-layer ops <span class="dim" id="laysel"></span></h2><div id="layops"></div>
+    <h2 style="margin-top:8px">Attention detail</h2><div id="attn"></div></div>
 
-  <div class="panel full">
-    <h2>GPU monitor (A100 · nvidia-smi, 2s)</h2>
-    <div class="gpus" id="gpus"></div>
-    <div class="hint">SM/Tensor-Core util need DCGM/Nsight — kept as an explicit deeper profiling mode, not always-on.</div>
-  </div>
+  <div class="p c12"><h2>Heatmap — layer × step (latency ms)</h2><div id="heat"></div></div>
 
-  <div class="panel full">
-    <h2>Timeline · last 100 measurements</h2>
-    <svg id="tl" viewBox="0 0 1000 80" preserveAspectRatio="none"></svg>
-    <div class="hint" id="tlhint"></div>
-  </div>
+  <div class="p c8"><h2>GPU time-series (overlay, last 120s) —
+    <span class="flex" style="display:inline-flex" id="metricsel"></span></h2>
+    <svg id="gts" viewBox="0 0 1000 150" preserveAspectRatio="none" style="height:150px"></svg>
+    <div class="dim" id="gtshint"></div></div>
+  <div class="p c4"><h2>GPU now</h2><div id="gpunow"></div></div>
+
+  <div class="p c6"><h2>Multi-GPU per step (parallel efficiency)</h2><div id="mg"></div></div>
+  <div class="p c6"><h2>Kernel benchmark history</h2><div id="bench"></div>
+    <h2 style="margin-top:8px">Instrumentation</h2><div id="oh" class="dim"></div></div>
 </div>
 
 <script>
-const $=id=>document.getElementById(id);
-const fmt=(x,d=1)=>x==null?"—":(+x).toFixed(d);
-const COLORS=["#4cc2ff","#b48cff","#3fd08a","#ffcc4d","#ff6b6b","#57d9d9","#f78fb3","#9aa7ff","#c0d860","#ff9f6b"];
+const $=s=>document.getElementById(s);
+const f=(x,d=1)=>x==null?"—":(+x).toFixed(d);
+const COL=["#4cc2ff","#b48cff","#3fd08a","#ffcc4d","#ff5d5d","#57d9d9","#f78fb3","#9aa7ff","#c0d860","#ff9f6b","#8fd0ff","#d0a0ff"];
+const opColor={};let ci=0;const colorOf=o=>opColor[o]||(opColor[o]=COL[ci++%COL.length]);
+let SEL={step:null,layer:null,metric:"sm"};
+let LAST=null;
 
-function overview(o){
-  const rows=[["gen id",o.gen_id??"—"],["elapsed",fmt(o.elapsed,1)+"s"],["ETA",o.eta!=null?fmt(o.eta,1)+"s":"—"],
-    ["step",(o.step??0)+" / "+(o.total_steps??"?")],["layer",o.layer??"—"],["seq len",(o.seq_len||0).toLocaleString()],
-    ["kernel",o.kernel??"—"],["dtype",o.dtype??"—"],["step time",o.step_total_ms?fmt(o.step_total_ms,1)+"ms":"—"]];
-  $("ov").innerHTML=rows.map(([l,v])=>`<div><div class="lab">${l}</div><div class="big">${v}</div></div>`).join("");
-  $("ovhint").style.display=o.gen_id?"none":"block";
+function warnings(w){
+  if(!w||!w.length){$("warnbox").style.display="none";return;}
+  $("warnbox").style.display="block";
+  $("warnbox").innerHTML=w.map(x=>`<div class="warn ${/imbalance|dominates/.test(x)?'y':''}">⚠ ${x}</div>`).join("");
 }
-function stages(list){
-  const tot=list.reduce((a,s)=>a+s.ms,0)||1;
-  $("stbar").innerHTML=list.map((s,i)=>`<span title="${s.stage}" style="width:${100*s.ms/tot}%;background:${COLORS[i%COLORS.length]}"></span>`).join("");
-  $("stlist").innerHTML=list.map((s,i)=>`<div class="strow"><span><span class="sw" style="background:${COLORS[i%COLORS.length]}"></span>${s.stage}</span><span class="mono">${fmt(s.ms,2)} ms · ${fmt(s.pct,1)}%</span></div>`).join("")||'<div class="muted">no stage events yet</div>';
-  const A=["QK","qk_gemm","softmax","PV","pv_gemm","cp_async_wait","barrier","load","other"];
-  const att=list.filter(s=>A.some(a=>s.stage.toLowerCase().includes(a.toLowerCase())));
-  $("attn").innerHTML=att.length?att.map(s=>`<div class="strow"><span>${s.stage}</span><span class="mono">${fmt(s.ms,3)} ms · ${fmt(s.pct,1)}%</span></div>`).join(""):'<div class="muted">no attention sub-stage events yet</div>';
+function stepById(run,s){return run.steps.find(x=>x.step===s);}
+function pickStep(run){ if(SEL.step==null||!stepById(run,SEL.step)){const ws=run.steps.filter(s=>s.ms);SEL.step=ws.length?ws[ws.length-1].step:run.steps[0].step;} return stepById(run,SEL.step);}
+
+function breakdown(run){
+  $("stepsel").innerHTML=run.steps.map(s=>`<span class="chip ${s.step===SEL.step?'on':''}" onclick="SEL.step=${s.step};SEL.layer=null;render(LAST)">s${s.step}</span>`).join("");
+  const st=pickStep(run); if(!st||!st.ms){$("stack").innerHTML="";$("stbl").innerHTML='<div class="na">no data</div>';return;}
+  const items=Object.entries(st.ops).sort((a,b)=>b[1]-a[1]);
+  const un=st.unaccounted||0; if(un>0)items.push(["unaccounted",un]);
+  $("stack").innerHTML=items.map(([k,v])=>`<span title="${k} ${f(v,0)}ms" style="width:${100*v/st.ms}%;background:${k=='unaccounted'?'#39485a':colorOf(k)}"></span>`).join("");
+  $("stbl").innerHTML=`<table><tr><th>op (leaf)</th><th class="n">ms</th><th class="n">% step</th></tr>`+
+    items.map(([k,v])=>`<tr><td><span class="sw" style="background:${k=='unaccounted'?'#39485a':colorOf(k)}"></span>${k}</td><td class="n">${f(v,1)}</td><td class="n">${f(100*v/st.ms,1)}</td></tr>`).join("")+
+    `<tr><td><b>step total</b></td><td class="n"><b>${f(st.ms,1)}</b></td><td class="n">100</td></tr></table>
+     <div class="dim" style="margin-top:3px">leaf-op sum ${f(st.op_sum,1)}ms · unaccounted ${f(un,1)}ms (${f(100*un/st.ms,2)}%) · parents _step/_layer shown as totals only</div>`;
+}
+function stepsTable(run){
+  const rows=run.steps.filter(s=>s.ms);
+  $("steps").innerHTML=`<table><tr><th>step</th><th class="n">ms</th><th class="n">Δ prev</th><th class="n">unacc%</th><th class="n">attn%</th></tr>`+
+    rows.map((s,i)=>{const dp=i>0?s.ms-rows[i-1].ms:0;const attn=Object.entries(s.ops).filter(([k])=>k.startsWith("attn.")).reduce((a,[,v])=>a+v,0);
+    return `<tr><td>s${s.step}</td><td class="n">${f(s.ms,0)}</td><td class="n ${dp<0?'up':dp>0?'down':''}">${i?(dp>0?'+':'')+f(dp,0):'—'}</td><td class="n">${f(100*(s.unaccounted||0)/s.ms,2)}</td><td class="n">${f(100*attn/s.ms,1)}</td></tr>`}).join("")+`</table>`;
+}
+function layers(run){
+  const st=pickStep(run); if(!st){$("layers").innerHTML="";return;}
+  const L=Object.entries(st.layers).map(([l,ms])=>[+l,ms]).sort((a,b)=>a[0]-b[0]);
+  if(!L.length){$("layers").innerHTML='<div class="na">no per-layer data</div>';return;}
+  const vals=L.map(x=>x[1]),mn=Math.min(...vals),mx=Math.max(...vals),av=vals.reduce((a,b)=>a+b,0)/vals.length;
+  if(SEL.layer==null)SEL.layer=L.reduce((a,b)=>b[1]>a[1]?b:a)[0];
+  $("layers").innerHTML=`<div class="dim" style="margin-bottom:3px">min ${f(mn,0)} · avg ${f(av,0)} · max ${f(mx,0)} ms · outliers >1.15×avg</div><table><tr><th>layer</th><th class="n">ms</th><th class="n">% step</th><th></th></tr>`+
+    L.map(([l,ms])=>{const out=ms>av*1.15;return `<tr style="cursor:pointer;${l===SEL.layer?'background:#17222f':''}" onclick="SEL.layer=${l};render(LAST)"><td>L${String(l).padStart(2,'0')} ${out?'<span class="down">▲</span>':''}</td><td class="n">${f(ms,1)}</td><td class="n">${f(100*ms/st.ms,1)}</td><td style="width:40%"><div style="height:7px;background:${out?'var(--bad)':'var(--accent)'};width:${100*ms/mx}%;border-radius:3px"></div></td></tr>`}).join("")+`</table>`;
+}
+function layerOps(run){
+  const st=pickStep(run); if(!st){return;}
+  $("laysel").textContent=SEL.layer!=null?`· step ${st.step} · layer ${SEL.layer}`:"";
+  const lo=st.layer_ops&&st.layer_ops[SEL.layer];
+  if(!lo){$("layops").innerHTML='<div class="na">select a layer</div>';}
+  else{const tot=Object.values(lo).reduce((a,b)=>a+b,0)||1;
+    $("layops").innerHTML=`<table>`+Object.entries(lo).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<tr><td><span class="sw" style="background:${colorOf(k)}"></span>${k}</td><td class="n">${f(v,2)}ms</td><td class="n">${f(100*v/tot,1)}%</td></tr>`).join("")+`</table>`;}
+  // attention detail for the step (summed over layers)
+  const A=["attn.qkv","attn.rope","attn.qknorm","attn.core","attn.out","attn.reshape"];
+  const FA3=["qk_gemm","softmax","pv_gemm","cp_async_load","cp_async_wait","barrier","epilogue"];
+  const show=[...A,...FA3];
+  const at=show.filter(k=>st.ops[k]!=null);
+  const tot=at.reduce((a,k)=>a+st.ops[k],0)||1;
+  $("attn").innerHTML=`<table>`+A.map(k=>`<tr><td>${k}</td><td class="n">${st.ops[k]!=null?f(st.ops[k],1)+'ms':'<span class="na">n/a</span>'}</td><td class="n">${st.ops[k]!=null?f(100*st.ops[k]/tot,1)+'%':''}</td></tr>`).join("")+
+    FA3.map(k=>`<tr><td class="dim">${k}</td><td class="n">${st.ops[k]!=null?f(st.ops[k],2)+'ms':'<span class="na">n/a (FA3 kernel)</span>'}</td><td class="n">${st.ops[k]!=null?f(100*st.ops[k]/tot,1)+'%':''}</td></tr>`).join("")+`</table>`;
+}
+function bottleneck(b){
+  if(!b||!b.length){$("bott").innerHTML='<div class="na">no data</div>';return;}
+  $("bott").innerHTML=b.slice(0,6).map((x,i)=>`<div class="flex" style="justify-content:space-between"><span>${i+1}. <span class="sw" style="background:${colorOf(x.op)}"></span>${x.op}</span><span class="mono">${f(x.ms,0)}ms · ${f(x.pct,1)}%</span></div>`).join("");
+}
+function amdahl(a){
+  if(!a||!a.length){$("amdahl").innerHTML='<div class="na">no data</div>';return;}
+  const t=a[0];
+  $("amdahl").innerHTML=`<div class="dim">${t.op} = ${f(t.pct,1)}% of step</div><table><tr><th>speedup</th><th class="n">step ms</th><th class="n">overall</th></tr>`+
+    Object.keys(t.scen).map(sp=>`<tr><td>${sp}× ${t.op}</td><td class="n">${f(t.scen[sp].step_ms,0)}</td><td class="n up">${f(t.scen[sp].overall,3)}×</td></tr>`).join("")+`</table>`;
+}
+function cmp(c){
+  if(!c){$("cmp").innerHTML='<div class="na">—</div>';return;}
+  const cur=c.current,pv=c.previous,bt=c.best;
+  const row=(lab,v,ref)=>{const d=(v!=null&&ref!=null&&ref)?100*(v-ref)/ref:null;return `<tr><td>${lab}</td><td class="n">${v!=null?f(v,0):'—'}</td><td class="n ${d==null?'':d<0?'up':'down'}">${d==null?'':(d>0?'+':'')+f(d,1)+'%'}</td></tr>`};
+  $("cmp").innerHTML=`<table><tr><th></th><th class="n">avg step ms</th><th class="n">vs best</th></tr>
+    ${row('current',cur&&cur.avg_step_ms,bt&&bt.avg_step_ms)}
+    ${row('previous',pv&&pv.avg_step_ms,bt&&bt.avg_step_ms)}
+    <tr><td>best</td><td class="n">${bt?f(bt.avg_step_ms,0):'—'}</td><td class="n">—</td></tr></table>
+    <div class="dim">${pv?'prev gen '+pv.gen:'no previous run yet'}</div>`;
+}
+function heat(run){
+  const steps=run.steps.filter(s=>Object.keys(s.layers).length);
+  if(!steps.length){$("heat").innerHTML='<div class="na">no per-layer data</div>';return;}
+  const nl=Math.max(...steps.flatMap(s=>Object.keys(s.layers).map(Number)))+1;
+  let mx=0;steps.forEach(s=>Object.values(s.layers).forEach(v=>mx=Math.max(mx,v)));
+  const color=v=>{const t=Math.min(v/mx,1);const r=Math.round(20+t*235),g=Math.round(50+(1-t)*120),b=Math.round(90-(t*40));return `rgb(${r},${g},${b})`};
+  let h=`<div class="hm" style="grid-template-columns:34px repeat(${steps.length},1fr)">`;
+  h+=`<div class="dim" style="font-size:9px">L\\s</div>`+steps.map(s=>`<div class="dim" style="font-size:9px;text-align:center">s${s.step}</div>`).join("");
+  for(let l=0;l<nl;l++){h+=`<div class="dim mono" style="font-size:9px">${String(l).padStart(2,'0')}</div>`;
+    h+=steps.map(s=>{const v=s.layers[l];return `<i title="L${l} s${s.step}: ${f(v,1)}ms" style="background:${v==null?'#0d131a':color(v)}"></i>`}).join("");}
+  h+=`</div><div class="dim" style="margin-top:3px">darker/red = slower · max ${f(mx,1)}ms</div>`;
+  $("heat").innerHTML=h;
+}
+function gpunow(gs){
+  if(!gs||!gs.length){$("gpunow").innerHTML='<div class="na">no GPU data</div>';return;}
+  $("gpunow").innerHTML=`<table><tr><th>gpu</th><th class="n">sm%</th><th class="n">mem%</th><th class="n">W</th><th class="n">°C</th><th class="n">PCIe MB/s</th></tr>`+
+    gs.map(g=>`<tr><td>${g.idx}</td><td class="n">${f(g.sm,0)}</td><td class="n">${f(g.mem,0)}</td><td class="n">${f(g.power,0)}</td><td class="n">${f(g.gtemp,0)}</td><td class="n">${f(g.rxpci,0)}/${f(g.txpci,0)}</td></tr>`).join("")+`</table><div class="dim">TC util: <span class="na">n/a (needs DCGM)</span></div>`;
+}
+function gts(hist){
+  const M=SEL.metric;const ids=Object.keys(hist||{}).map(Number).sort((a,b)=>a-b);
+  $("metricsel").innerHTML=[["sm","SM%"],["power","Power"],["mem","Mem%"],["rxpci","PCIe RX"],["txpci","PCIe TX"],["nvlink","NVLink"]].map(([k,l])=>`<span class="chip ${M===k?'on':''}" onclick="SEL.metric='${k}';render(LAST)">${l}</span>`).join("");
+  if(!ids.length){$("gts").innerHTML="";$("gtshint").textContent="no GPU samples yet";return;}
+  const now=Date.now()/1000,W=1000,Hh=150;let mx=1;
+  ids.forEach(i=>hist[i].forEach(s=>{if(s[M]!=null)mx=Math.max(mx,s[M])}));
+  let svg="";
+  ids.forEach((i,gi)=>{const pts=hist[i].filter(s=>s[M]!=null).map(s=>{const x=W-(now-s.ts)/120*W;return `${x.toFixed(1)},${(Hh-(s[M]/mx)*(Hh-6)-2).toFixed(1)}`});
+    if(pts.length>1)svg+=`<polyline points="${pts.join(' ')}" fill="none" stroke="${COL[gi%COL.length]}" stroke-width="1.3" opacity="0.9"/>`;});
+  $("gts").innerHTML=svg;
+  $("gtshint").innerHTML=`max ${f(mx,0)} · `+ids.map((i,gi)=>`<span style="color:${COL[gi%COL.length]}">GPU${i}</span>`).join(" ");
+}
+function multigpu(mg){
+  if(!mg||!mg.length){$("mg").innerHTML='<div class="na">no live GPU/step correlation (only during a live run)</div>';return;}
+  $("mg").innerHTML=`<table><tr><th>step</th><th class="n">wall s</th><th class="n">eff. GPUs</th><th class="n">active</th></tr>`+
+    mg.map(m=>`<tr><td>s${m.step}</td><td class="n">${f(m.wall_s,1)}</td><td class="n">${f(m.effective_active,2)}/${m.n_gpu}</td><td class="n">${m.active_count}</td></tr>`).join("")+`</table>`;
 }
 function bench(b){
-  const rows=b.rows.map(r=>{
-    const isFast=b.fastest&&r.kernel===b.fastest.kernel;
-    const isCur=b.current&&r.kernel===b.current.kernel;
-    const vs=r.vs_fa2_calc; const cls=vs>1?"up":(vs<1?"down":"");
-    return `<tr><td>${r.kernel} ${isFast?'<span class="tag fast">fastest</span>':''}${isCur?'<span class="tag cur">current</span>':''}</td>
-      <td class="n">${fmt(r.latency_ms,1)} ms</td><td class="n ${cls}">${vs?fmt(vs,2)+"×":"—"}</td>
-      <td class="muted" style="font-size:11px">${r.config||r.note||""}</td></tr>`;
-  }).join("");
-  $("bench").innerHTML=rows;
-  const f=b.fastest;
-  $("benchhint").innerHTML=f?`fastest: <b>${f.kernel}</b> ${fmt(f.latency_ms,1)}ms · FA2 ${fmt(b.fa2_ms,1)}ms · best improvement ${fmt(b.fa2_ms/f.latency_ms,2)}×`:"";
+  if(!b){return;}
+  $("bench").innerHTML=`<table><tr><th>kernel</th><th class="n">ms</th><th class="n">vs FA2</th></tr>`+
+    b.rows.map(r=>`<tr><td>${r.kernel}${b.fastest&&r.kernel===b.fastest.kernel?' <span class="tag fast">fastest</span>':''}</td><td class="n">${f(r.latency_ms,1)}</td><td class="n ${r.vs_fa2_calc>1?'up':r.vs_fa2_calc<1?'down':''}">${r.vs_fa2_calc?f(r.vs_fa2_calc,2)+'×':'—'}</td></tr>`).join("")+`</table><div class="dim">${b.n} results kept · best never overwritten</div>`;
 }
-function gpus(list){
-  $("gpus").innerHTML=list.map(g=>{
-    if(g.index<0) return `<div class="gpu bad">${g.name}</div>`;
-    const memPct=g.mem_total?100*g.mem_used/g.mem_total:0;
-    const tcol=g.temp>82?"var(--bad)":g.temp>72?"var(--warn)":"var(--good)";
-    return `<div class="gpu">
-      <div class="id">GPU ${g.index} <span class="muted" style="font-weight:400;font-size:11px">${(g.name||'').replace('NVIDIA ','')}</span></div>
-      <div class="kv"><span class="muted">util</span><span class="v">${fmt(g.util,0)}%</span></div>
-      <div class="bar"><i style="width:${g.util||0}%"></i></div>
-      <div class="kv"><span class="muted">mem</span><span class="v">${fmt(g.mem_used/1024,1)}/${fmt(g.mem_total/1024,0)} GB</span></div>
-      <div class="bar"><i style="width:${memPct}%;background:var(--tc)"></i></div>
-      <div class="kv"><span class="muted">temp</span><span class="v" style="color:${tcol}">${fmt(g.temp,0)}°C</span></div>
-      <div class="kv"><span class="muted">power</span><span class="v">${fmt(g.power,0)}/${fmt(g.power_limit,0)} W</span></div>
-      <div class="kv"><span class="muted">clock</span><span class="v">${fmt(g.clock,0)}/${fmt(g.clock_max,0)} MHz</span></div>
-    </div>`;
-  }).join("")||'<div class="muted">no GPUs</div>';
+function render(d){
+  if(!d)return;LAST=d;$("dot").classList.add("on");$("clock").textContent=new Date(d.ts*1000).toLocaleTimeString();
+  warnings(d.warnings);bench(d.bench);gpunow(d.gpus);gts(d.gpu_hist);multigpu(d.multi_gpu);cmp(d.comparisons);
+  $("oh").innerHTML=d.overhead?`${d.overhead.events} events · ${d.overhead.eps}/s · ${d.overhead.note}`:'';
+  if(!d.run){$("hdr").textContent="waiting for a run…";return;}
+  const r=d.run;$("hdr").textContent=`${r.gen} · ${r.kernel} · seq ${r.seq_len} · ${r.dtype} · ${r.steps.length} steps`;
+  breakdown(r);stepsTable(r);layers(r);layerOps(r);heat(r);bottleneck(d.bottleneck);amdahl(d.amdahl);
 }
-function timeline(tl){
-  if(!tl.length){$("tl").innerHTML="";$("tlhint").textContent="no step-timing events yet";return;}
-  const ms=tl.map(t=>t.ms||0),max=Math.max(...ms,1),n=tl.length,W=1000,H=80;
-  const pts=ms.map((v,i)=>`${(i/(Math.max(n-1,1)))*W},${H-(v/max)*(H-8)-2}`).join(" ");
-  const bars=ms.map((v,i)=>{const w=W/n;return `<rect x="${i*w}" y="${H-(v/max)*(H-8)-2}" width="${Math.max(w-1,1)}" height="${(v/max)*(H-8)}" fill="#4cc2ff" opacity="0.35"/>`}).join("");
-  $("tl").innerHTML=bars+`<polyline points="${pts}" fill="none" stroke="#4cc2ff" stroke-width="1.5"/>`;
-  $("tlhint").textContent=`${n} steps · last ${fmt(ms[ms.length-1],1)}ms · max ${fmt(max,1)}ms · avg ${fmt(ms.reduce((a,b)=>a+b,0)/n,1)}ms`;
-}
-function render(s){
-  $("dot").classList.add("on");$("clock").textContent=new Date(s.ts*1000).toLocaleTimeString();
-  overview(s.overview);stages(s.stages||[]);bench(s.bench);gpus(s.gpus||[]);timeline(s.timeline||[]);
-}
-function connect(){
-  const es=new EventSource("/events");
-  es.onmessage=e=>{try{render(JSON.parse(e.data))}catch(_){}};
-  es.onerror=()=>{$("dot").classList.remove("on");es.close();setTimeout(connect,2000);};
-}
+function connect(){const es=new EventSource("/events");es.onmessage=e=>{try{render(JSON.parse(e.data))}catch(_){}};
+  es.onerror=()=>{$("dot").classList.remove("on");es.close();setTimeout(connect,2000)};}
 connect();
-</script>
-</body>
-</html>
+</script></body></html>

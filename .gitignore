@@ -4,3 +4,8 @@
 __pycache__/
 *.pyc
 .venv*/
+# dashboard runtime data
+dashboard/run_capture.jsonl
+dashboard/runs/
+dashboard/bench_history.json
+dashboard/server.log

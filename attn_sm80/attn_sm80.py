@@ -16,6 +16,7 @@ def _build():
             name="fa3_sm80_h3",
             sources=[os.path.join(_HERE, "fa3_sm80_h3.cu")],
             extra_cuda_cflags=["-O3", "-arch=sm_80", "--use_fast_math",
+                               "-DSTAGES=1", "-DMINCTA=3", "-DPAD=8",
                                "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
                                "-U__CUDA_NO_BFLOAT16_OPERATORS__"],
             verbose=True,
