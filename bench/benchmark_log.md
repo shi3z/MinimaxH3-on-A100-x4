@@ -104,6 +104,39 @@ Implications:
   **A-3 (CUDA-graph the 50-block loop)** is the better next lever for the uncontended case.
 - Kept in the repo, gated behind `SP_OVERLAP=1` (default off; no change to the validated blocking path).
 
+## Step caching — First-Block-Cache / TeaCache (approximate, 2026-09-19)
+Orthogonal to SP: skip recompute across denoise STEPS instead of parallelizing one step.
+Unlike SP it consumes no extra GPUs → multiplies the data-parallel fleet's throughput.
+`custom_nodes/h3_fbcache/` (env `H3_FBCACHE=1`): run only block 0 each step, measure its
+residual's rel-L1 vs last step; while accumulated < threshold, skip blocks[1:] and reuse the
+cached rest-of-stack residual. Step 0 always computes. New-gen detected via timestep rising.
+
+Real A/B, same backend (GPU5/:8195), same seed 740049, full-res 1280×720 × 158f, 6-step turbo:
+| run | wall-clock | skips | note |
+|---|---|---|---|
+| cache OFF | **212 s** | 0/6 | baseline |
+| cache ON (thresh 0.08) | **92 s** | **5/6** | 2.3× — but see below |
+
+**2.3× speedup is real, but the naive signal OVER-SKIPS.** The per-step log showed
+`step0 calc; steps1-5 SKIP; accum=0.000` — i.e. the rel-L1 signal read ~0 every step and
+skipped all but step 0, collapsing quality toward a 1-step generation. Root cause: the signal
+is a **mean over the whole packed sequence** `[text|cond|audio|video]`; the static conditioning
+tokens dominate the mean, hiding the video tokens' real change. (Takes: cut2162 kf4 = ON,
+kf5 = OFF, for visual comparison.)
+
+Fix (TODO before any deploy):
+- Restrict the change signal to the **video/audio (denoised) tokens only** (needs the layout's
+  video/audio ranges plumbed into run_blocks), or
+- Use a **t_emb-based TeaCache signal** (t_emb changes every step; add a per-model polynomial
+  rescale), or
+- Simply lower the threshold — but the mean signal is so flat (0.000) that thresholding alone
+  won't give a sensible skip pattern; the signal itself must change.
+Expected with a correct signal on the 6-step turbo path: ~1.3–1.6× at good quality (few steps
+to skip); much larger on long-step paths (30-step audio/no-turbo). Node is gated (default off).
+
+Note: the audio-regen path (0.5× res, 30-step) showed NO wall-clock gain from caching (62 s on
+vs 62 s off, same backend) — that path is model-load/VAE/mux-bound, not denoise-bound.
+
 ## Strategy (revised by measurement)
 Attention >50% → prioritize attention. Single-GPU exact maxed → implement **4-GPU Ulysses sequence-parallel denoiser** (exact). Then AdaLN precompute + rope cache + CUDA graph for the residual overhead; SageAttention as a separate quality-flagged experiment.
 
