@@ -77,6 +77,33 @@ Full step ≈ 5.8s block + ~0.34 prep/final ≈ **~6.15s = ~3.1× per step, EXAC
 - Production foundation done: (1) behavior-safe `run_blocks` seam in model.py (verified: normal gen works), (2) reusable `sp_runtime.py` validated bit-exact through the seam.
 - Remaining: persistent 4-rank SP service + oracle wiring; uneven-S sharding (currently requires S%WORLD==0).
 
+## A-1 experiment — comm/compute overlap (exact, 2026-09-19)
+Hypothesis: the 51%-comm figure (contended profile) means hiding the Q-input and O-output
+all-to-alls under FlashAttention should recover a big chunk. Implemented in
+`sp_runtime.py::_sp_attn_forward_overlap` (env `SP_OVERLAP=1`, `SP_PIECES=P`): K,V gathered
+once (blocking), then Q-in and O-out all-to-alls split into P local-token pieces and software-
+pipelined on a side CUDA stream so piece p+1's transfers overlap piece p's FA-2. Math unchanged.
+
+Measured via the production seam (GPU4-7, GPU0-3 idle → **uncontended**), fleet paused + comfy VRAM freed:
+| variant | run_blocks ms | vs 1-GPU | correctness |
+|---|---|---|---|
+| blocking (baseline) | 5666.7 | 3.29× | max_err 0.0 |
+| overlap P=2 | 5681.5 | 3.28× | max_err 0.0 |
+| overlap P=4 | 5725.7 | 3.26× | max_err 0.0 |
+
+**Result: no speedup uncontended — in fact slightly slower, and monotonically worse with more
+pieces (5666 < 5681 < 5725).** The overlap is correct (bit-exact) but the uncontended block loop
+is **compute-bound**, not comm-bound: the 51% comm was specific to the *contended* run (GPU0-3
+saturating PCIe). With GPU0-3 idle there is little comm to hide, and the extra kernel-launch /
+stream-sync overhead of chunking dominates — hence more pieces = slower.
+
+Implications:
+- A-1 only pays off under **PCIe contention** (the real ~2.1× production regime). Could not measure
+  that here without artificially loading GPU0-3 (another project's GPUs) — deferred.
+- The "more pieces = slower" signal says **per-kernel launch overhead is a live cost** uncontended →
+  **A-3 (CUDA-graph the 50-block loop)** is the better next lever for the uncontended case.
+- Kept in the repo, gated behind `SP_OVERLAP=1` (default off; no change to the validated blocking path).
+
 ## Strategy (revised by measurement)
 Attention >50% → prioritize attention. Single-GPU exact maxed → implement **4-GPU Ulysses sequence-parallel denoiser** (exact). Then AdaLN precompute + rope cache + CUDA graph for the residual overhead; SageAttention as a separate quality-flagged experiment.
 

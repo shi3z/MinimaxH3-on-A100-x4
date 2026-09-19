@@ -58,6 +58,68 @@ def _sp_attn_forward(self, x, rope_freqs=None, transformer_options={}):
     o = o.transpose(1, 2).reshape(s, self.heads * self.head_dim)
     return self.out_proj(o)
 
+# ---- A-1: comm/compute overlap (exact) ----------------------------------------
+# K,V are gathered once (must precede any FA-2). The Q input all-to-all and the O
+# output all-to-all are split into P pieces along the local-token axis and software-
+# pipelined on a side stream, so piece p+1's transfers hide under piece p's
+# FlashAttention. Math is byte-identical to _sp_attn_forward -> bit-exact.
+_PIECES = int(os.environ.get("SP_PIECES", "4"))
+_comm_stream = None
+
+def _piece_bounds(n, p):
+    base, rem = divmod(n, p)
+    out, s = [], 0
+    for i in range(p):
+        ln = base + (1 if i < rem else 0)
+        if ln == 0:
+            continue
+        out.append((s, s + ln)); s += ln
+    return out
+
+def _sp_attn_forward_overlap(self, x, rope_freqs=None, transformer_options={}):
+    import comfy.model_management, comfy.quant_ops
+    global _comm_stream
+    if _comm_stream is None:
+        _comm_stream = torch.cuda.Stream()
+    s = x.shape[0]
+    q, k, v = self.qkv_proj(x).split(self.heads * self.head_dim, dim=-1)
+    v = v.view(s, self.heads, self.head_dim)
+    if rope_freqs is not None:
+        q = q.view(1, s, self.heads, self.head_dim); k = k.view(1, s, self.heads, self.head_dim)
+        qw = comfy.model_management.cast_to(self.q_norm.weight, device=x.device)
+        kw = comfy.model_management.cast_to(self.k_norm.weight, device=x.device)
+        rot = rope_freqs.shape[-3] * 2
+        comfy.quant_ops.ck.rms_rope_split_half_(q, k, rope_freqs, qw, kw, epsilon=self.q_norm.eps, rot_dim=rot)
+        q = q[0]; k = k[0]
+    else:
+        q = self.q_norm(q.view(s, self.heads, self.head_dim)); k = self.k_norm(k.view(s, self.heads, self.head_dim))
+    q = q.transpose(0, 1).unsqueeze(0); k = k.transpose(0, 1).unsqueeze(0); v = v.transpose(0, 1).unsqueeze(0)
+    # gather full K,V (blocking) — required before any attention
+    kh = a2a_seq_to_head(k, WORLD); vh = a2a_seq_to_head(v, WORLD)
+    Hl = self.heads // WORLD
+    pieces = _piece_bounds(s, _PIECES)
+    default = torch.cuda.current_stream()
+    _comm_stream.wait_stream(default)                       # q,kh,vh ready before comm uses them
+    o = torch.empty(1, self.heads, s, self.head_dim, device=x.device, dtype=q.dtype)
+    # prime: gather Q piece 0 on comm stream
+    with torch.cuda.stream(_comm_stream):
+        qh_next = a2a_seq_to_head(q[:, :, pieces[0][0]:pieces[0][1], :].contiguous(), WORLD)
+    for i, (lo, hi) in enumerate(pieces):
+        default.wait_stream(_comm_stream)                  # qh for this piece is gathered
+        qh_p = qh_next
+        if i + 1 < len(pieces):                            # overlap: gather next Q piece while we compute
+            nlo, nhi = pieces[i + 1]
+            with torch.cuda.stream(_comm_stream):
+                qh_next = a2a_seq_to_head(q[:, :, nlo:nhi, :].contiguous(), WORLD)
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION]):    # FA-2 on default stream, hides comm above
+            oh_p = torch.nn.functional.scaled_dot_product_attention(qh_p, kh, vh)
+        with torch.cuda.stream(_comm_stream):              # scatter O piece back, overlaps next FA-2
+            _comm_stream.wait_stream(default)
+            o[:, :, lo:hi, :] = a2a_head_to_seq(oh_p, WORLD, self.heads)
+    default.wait_stream(_comm_stream)                      # all O scatters done
+    o = o.transpose(1, 2).reshape(s, self.heads * self.head_dim)
+    return self.out_proj(o)
+
 def _shard_segments(segs, lo, hi):
     out = []
     for a, b, row in segs:
@@ -87,7 +149,9 @@ def install():
     import comfy.ldm.minimax.model as MM
     if _orig_run_blocks is None:
         _orig_run_blocks = MM.MiniMaxH3Model.run_blocks
-    MM.Attention.forward = _sp_attn_forward
+    overlap = os.environ.get("SP_OVERLAP") == "1"
+    MM.Attention.forward = _sp_attn_forward_overlap if overlap else _sp_attn_forward
     MM.MiniMaxH3Model.run_blocks = _sp_run_blocks
     if RANK == 0:
-        print(f"[sp_runtime] installed (WORLD={WORLD}) — run_blocks + Ulysses attention patched", flush=True)
+        mode = f"overlap(P={_PIECES})" if overlap else "blocking"
+        print(f"[sp_runtime] installed (WORLD={WORLD}) — run_blocks + Ulysses attention patched [{mode}]", flush=True)
