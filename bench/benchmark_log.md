@@ -137,6 +137,34 @@ to skip); much larger on long-step paths (30-step audio/no-turbo). Node is gated
 Note: the audio-regen path (0.5× res, 30-step) showed NO wall-clock gain from caching (62 s on
 vs 62 s off, same backend) — that path is model-load/VAE/mux-bound, not denoise-bound.
 
+## SageAttention (approximate attention) — no gain on A100 (2026-09-19)
+Idea: attack the 72% attention per-step with INT8 attention → would stack with data-parallel.
+Installed `sageattention==1.0.6` (pure-python + Triton, no CUDA build needed; runs on sm_80).
+Microbench at H3 scale (B1 H56 S40960 D128 bf16, GPU6, non-causal):
+| kernel | ms/attn | speedup | error vs FA-2 |
+|---|---|---|---|
+| SDPA → FlashAttention-2 | 252.2 | 1.00× | — |
+| SageAttention v1 (INT8/Triton) | 290.8 | **0.87× (SLOWER)** | rel_mean 1.3% |
+
+**No speedup — 13% slower.** SageAttention v1's INT8/Triton kernel does not beat A100's
+FA-2; its 2–3× headline numbers are v2/v2++ on Hopper (fp8). v2 needs a CUDA source build,
+blocked here (torch cu130, no CUDA-13 toolkit; max nvcc 12.9). Uninstalled — no cruft left in
+the production venv.
+
+## Conclusion — throughput levers are exhausted on this hardware
+Three "make the fleet faster" attempts, all measured, all negative for the real bulk workload
+(turbo 6-step, full-res, data-parallel on A100 sm_80):
+- **A-1 SP comm/compute overlap**: no gain uncontended (block loop is compute-bound, not comm-bound).
+- **Step caching (FBCache/TeaCache)**: breaks the 6-step turbo path (no step redundancy to skip → white/noise output); no gain on the 30-step audio path (load/VAE/mux-bound).
+- **SageAttention v1**: slower than FA-2 on A100.
+Root cause is that the fleet is already near the practical ceiling: per-step attention is FA-2
+(already optimal single-GPU), step count is minimized by the turbo distill LoRA, there is no
+step redundancy to cache, and the box has no cross-pair NVLink. The one proven win — **exact
+4-way Ulysses SP, ~3.1× per step** — helps single-cut **latency** (interactive/oracle), not bulk
+**throughput** (data-parallel already saturates all 4 GPUs).
+Remaining real options are hardware (SXM/NVLink box → SP scales toward 4×; or Hopper → SageAttn v2
+fp8) or accepting current throughput.
+
 ## Strategy (revised by measurement)
 Attention >50% → prioritize attention. Single-GPU exact maxed → implement **4-GPU Ulysses sequence-parallel denoiser** (exact). Then AdaLN precompute + rope cache + CUDA graph for the residual overhead; SageAttention as a separate quality-flagged experiment.
 
