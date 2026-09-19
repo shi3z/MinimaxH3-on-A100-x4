@@ -21,13 +21,15 @@ RUNS_DIR = os.path.join(HERE, "runs"); os.makedirs(RUNS_DIR, exist_ok=True)
 CAPTURE = os.path.join(HERE, "run_capture.jsonl")
 PORT = 8770          # 8765 is reserved
 FA2_BASELINE_MS = 263.1
-GPU_HIST = 120       # seconds of rolling GPU samples
+SAMPLE_DT = 0.15     # GPU telemetry sampling period (s) — sub-second, NVML
+GPU_HIST_SEC = 120
+GPU_HIST_N = int(GPU_HIST_SEC / SAMPLE_DT)  # rolling samples per GPU (~800)
 
 _lock = threading.Lock()
 _runs = collections.OrderedDict()     # gen_id -> run
 _cur = {"gen": None}
 _gpu = {}                             # idx -> latest sample
-_gpu_hist = collections.defaultdict(lambda: collections.deque(maxlen=GPU_HIST))
+_gpu_hist = collections.defaultdict(lambda: collections.deque(maxlen=GPU_HIST_N))
 _nvlink_prev = {}                     # idx -> (ts, kib_total)
 _ev_count = {"n": 0, "t0": time.time()}
 
@@ -83,7 +85,10 @@ def _persist_run(run):
         pass
 
 def _run_avg_step(run):
-    ms = [st["ms"] for st in run["steps"].values() if st["ms"]]
+    # steady-state: exclude the cold step 0 (P2)
+    ms = [st["ms"] for s, st in run["steps"].items() if st["ms"] and s >= 1]
+    if not ms:
+        ms = [st["ms"] for st in run["steps"].values() if st["ms"]]
     return round(sum(ms) / len(ms), 2) if ms else None
 
 def _run_op_avg(run):
@@ -95,62 +100,57 @@ def _run_op_avg(run):
                 agg[op] += v
     return {k: round(v / n, 2) for k, v in agg.items()} if n else {}
 
-# ---------------- GPU: nvidia-smi dmon stream + nvlink ----------------
-def _dmon():
-    # columns for -s pucmt: idx pwr gtemp mtemp sm mem enc dec jpg ofa mclk pclk fb bar1 ccpm rxpci txpci
+# ---------------- GPU: NVML sub-second poller (SAMPLE_DT) ----------------
+def _nvml_poller():
+    try:
+        import pynvml as NV
+    except Exception as e:
+        with _lock: _gpu[-1] = {"idx": -1, "err": f"pynvml unavailable: {e}"}
+        return
+    NV.nvmlInit()
+    n = NV.nvmlDeviceGetCount()
+    handles = [NV.nvmlDeviceGetHandleByIndex(i) for i in range(n)]
+    try:
+        RX = NV.NVML_FI_DEV_NVLINK_THROUGHPUT_DATA_RX; TX = NV.NVML_FI_DEV_NVLINK_THROUGHPUT_DATA_TX
+    except Exception:
+        RX = TX = None
+    def g(fn, *a):
+        try: return fn(*a)
+        except Exception: return None
     while True:
-        try:
-            p = subprocess.Popen(["nvidia-smi", "dmon", "-s", "pucmt", "-d", "1"],
-                                 stdout=subprocess.PIPE, text=True, bufsize=1)
-            for line in p.stdout:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                c = line.split()
-                if len(c) < 17:
-                    continue
-                def fi(x):
-                    try: return float(x)
-                    except Exception: return None
-                idx = int(c[0]); ts = time.time()
-                s = {"ts": ts, "idx": idx, "power": fi(c[1]), "gtemp": fi(c[2]), "mtemp": fi(c[3]),
-                     "sm": fi(c[4]), "mem": fi(c[5]), "mclk": fi(c[10]), "pclk": fi(c[11]),
-                     "fb": fi(c[12]), "bar1": fi(c[13]), "rxpci": fi(c[15]), "txpci": fi(c[16]),
-                     "util": fi(c[4]), "tc": None,  # TC util needs DCGM -> unavailable
-                     "nvlink": _nvlink_rate(idx, ts)}
-                with _lock:
-                    _gpu[idx] = s; _gpu_hist[idx].append(s)
-        except Exception as e:
+        ts = time.time()
+        for i, h in enumerate(handles):
+            u = g(NV.nvmlDeviceGetUtilizationRates, h)
+            mem = g(NV.nvmlDeviceGetMemoryInfo, h)
+            pw = g(NV.nvmlDeviceGetPowerUsage, h)
+            rx = g(NV.nvmlDeviceGetPcieThroughput, h, NV.NVML_PCIE_UTIL_RX_BYTES)
+            tx = g(NV.nvmlDeviceGetPcieThroughput, h, NV.NVML_PCIE_UTIL_TX_BYTES)
+            temp = g(NV.nvmlDeviceGetTemperature, h, NV.NVML_TEMPERATURE_GPU)
+            sclk = g(NV.nvmlDeviceGetClockInfo, h, NV.NVML_CLOCK_SM)
+            nvl = None
+            if RX is not None:
+                try:
+                    vals = NV.nvmlDeviceGetFieldValues(h, [RX, TX]); cur = 0
+                    for v in vals:
+                        if v.nvmlReturn == 0: cur += int(v.value.ullVal)
+                    prev = _nvlink_prev.get(i)
+                    if prev and ts > prev[0]:
+                        nvl = max(0.0, (cur - prev[1]) / (ts - prev[0]) / 1024.0)  # MiB/s
+                    _nvlink_prev[i] = (ts, cur)
+                except Exception:
+                    pass
+            s = {"ts": ts, "idx": i,
+                 "sm": (u.gpu if u else None),          # NVML util.gpu = time-based GPU-busy % (SM-occupancy proxy; true SM% needs DCGM)
+                 "mem": (u.memory if u else None),       # memory-controller util % (HBM bandwidth proxy)
+                 "util": (u.gpu if u else None),
+                 "power": (pw / 1000.0 if pw is not None else None),
+                 "rxpci": (rx / 1024.0 if rx is not None else None),  # MB/s
+                 "txpci": (tx / 1024.0 if tx is not None else None),
+                 "gtemp": temp, "pclk": sclk, "nvlink": nvl,
+                 "fb": (mem.used / 1048576.0 if mem else None), "tc": None}
             with _lock:
-                _gpu[-1] = {"idx": -1, "err": str(e)}
-            time.sleep(3)
-
-_nvlink_poll = {"t": 0, "val": {}}
-def _nvlink_rate(idx, ts):
-    # refresh nvlink counters at most every ~2s (shared across GPUs)
-    if ts - _nvlink_poll["t"] > 2:
-        _nvlink_poll["t"] = ts
-        try:
-            out = subprocess.run(["nvidia-smi", "nvlink", "-gt", "d"], capture_output=True, text=True, timeout=3).stdout
-            cur = {}; g = None
-            for ln in out.splitlines():
-                ln = ln.strip()
-                if ln.startswith("GPU "):
-                    g = int(ln.split()[1].rstrip(":"))
-                    cur.setdefault(g, 0)
-                elif ln.startswith("Link") and g is not None and "KiB" in ln:
-                    try: cur[g] += int(ln.split()[-2])
-                    except Exception: pass
-            for gi, tot in cur.items():
-                prev = _nvlink_prev.get(gi)
-                if prev:
-                    dt = ts - prev[0]
-                    if dt > 0:
-                        _nvlink_poll["val"][gi] = max(0.0, (tot - prev[1]) / dt / 1024.0)  # MiB/s
-                _nvlink_prev[gi] = (ts, tot)
-        except Exception:
-            pass
-    return _nvlink_poll["val"].get(idx)
+                _gpu[i] = s; _gpu_hist[i].append(s)
+        time.sleep(SAMPLE_DT)
 
 # ---------------- bench ----------------
 def _load_bench():
@@ -173,26 +173,63 @@ def _gpu_window(idx, t0, t1):
     return samples
 
 def _multi_gpu_per_step(run):
+    """Integrate GPU active-time over each step window from the fine (SAMPLE_DT) NVML samples.
+    Never classify a GPU inactive from one instantaneous sample — use the time integral."""
     out = []
     with _lock:
-        gpu_ids = sorted(_gpu.keys())
+        gpu_ids = [g for g in sorted(_gpu.keys()) if g >= 0]
     for s in sorted(run["steps"]):
         st = run["steps"][s]
         if not st["start"] or not st["end"]:
             continue
-        win = st["end"] - st["start"]
-        per = {}
-        eff = 0.0
+        win = max(st["end"] - st["start"], 1e-6)
+        active_time = {}      # gpu -> integrated busy seconds
+        nsamp = {}
+        # peak simultaneous: at each sampled instant, how many GPUs busy>5%
+        tstamps = {}
         for gi in gpu_ids:
-            if gi < 0: continue
-            sm = [x["sm"] for x in _gpu_window(gi, st["start"], st["end"]) if x["sm"] is not None]
-            m = (sum(sm) / len(sm)) if sm else 0.0
-            per[gi] = round(m, 1); eff += m / 100.0
-        active = [gi for gi, v in per.items() if v > 5]
-        out.append({"step": s, "wall_s": round(win, 2), "per_gpu": per,
-                    "effective_active": round(eff, 2), "active_count": len(active),
-                    "n_gpu": len([g for g in gpu_ids if g >= 0])})
+            samples = _gpu_window(gi, st["start"], st["end"])
+            at = 0.0
+            for x in samples:
+                if x["sm"] is not None:
+                    at += (x["sm"] / 100.0) * SAMPLE_DT
+                    tstamps.setdefault(round(x["ts"], 1), []).append((gi, x["sm"]))
+            active_time[gi] = at; nsamp[gi] = len(samples)
+        eff = sum(active_time.values()) / win           # effective simultaneous GPUs
+        # peak simultaneous active count across sampled instants
+        peak = 0
+        for _, lst in tstamps.items():
+            peak = max(peak, sum(1 for _, sm in lst if sm > 5))
+        active = [gi for gi, at in active_time.items() if at / win > 0.05]
+        parallel_eff = (eff / peak) if peak else None   # how well active GPUs overlap in time
+        out.append({"step": s, "wall_s": round(win, 2),
+                    "active_time_s": {gi: round(v, 2) for gi, v in active_time.items()},
+                    "per_gpu_pct": {gi: round(100 * v / win, 1) for gi, v in active_time.items()},
+                    "effective_active": round(eff, 2), "peak_active": peak,
+                    "active_count": len(active), "n_gpu": len(gpu_ids),
+                    "parallel_efficiency": round(parallel_eff, 3) if parallel_eff else None,
+                    "samples": min(nsamp.values()) if nsamp else 0})
     return out
+
+def _step_stats(run):
+    """Separate cold (step 0) from steady-state (s1+). Report cold, steady median/p95/mean."""
+    ms = {s: run["steps"][s]["ms"] for s in run["steps"] if run["steps"][s]["ms"]}
+    if not ms:
+        return None
+    cold = ms.get(0)
+    steady = sorted(v for s, v in ms.items() if s >= 1)
+    def pct(a, p):
+        if not a: return None
+        i = min(len(a) - 1, int(round(p * (len(a) - 1))))
+        return a[i]
+    med = pct(steady, 0.5); p95 = pct(steady, 0.95)
+    mean = (sum(steady) / len(steady)) if steady else None
+    return {"cold_ms": round(cold, 1) if cold else None,
+            "steady_median_ms": round(med, 1) if med else None,
+            "steady_p95_ms": round(p95, 1) if p95 else None,
+            "steady_mean_ms": round(mean, 1) if mean else None,
+            "cold_overhead_ms": round(cold - med, 1) if (cold and med) else None,
+            "n_steady": len(steady)}
 
 def _amdahl(step_ms, ops):
     rows = []
@@ -219,13 +256,14 @@ def _warnings(run, rep_step, mg):
                 w.append(f"Attention dominates {100*attn/ms:.0f}% of step time")
     if mg:
         last = mg[-1]
-        if last["active_count"] <= 1 and last["n_gpu"] > 1:
-            w.append(f"Only {last['active_count']}/{last['n_gpu']} GPUs active — no multi-GPU parallelism")
-        vals = [v for v in last["per_gpu"].values()]
-        if vals and max(vals) > 5:
-            imb = (max(vals) - (sum(vals) / len(vals))) / max(vals)
-            if imb > 0.5:
-                w.append(f"GPU imbalance {100*imb:.0f}% (max {max(vals):.0f}% vs mean {sum(vals)/len(vals):.0f}%)")
+        if last.get("samples", 0) >= 3:   # only judge activity when we actually have samples in the window
+            if last["active_count"] <= 1 and last["n_gpu"] > 1:
+                w.append(f"Only {last['active_count']}/{last['n_gpu']} GPUs active over the step — single-GPU execution")
+            vals = list(last.get("per_gpu_pct", {}).values())
+            if vals and max(vals) > 5:
+                imb = (max(vals) - (sum(vals) / len(vals))) / max(vals)
+                if imb > 0.5:
+                    w.append(f"GPU imbalance {100*imb:.0f}% (max {max(vals):.0f}% vs mean {sum(vals)/len(vals):.0f}%)")
     return w
 
 def _bench_view():
@@ -273,15 +311,22 @@ def _comparisons(run):
     best = min(others + [cur], key=lambda d: d["avg_step_ms"] or 9e9) if (others or cur["avg_step_ms"]) else None
     return {"current": cur, "previous": prev, "best": best}
 
+def _decimate(seq, keep=240):
+    seq = list(seq)
+    if len(seq) <= keep:
+        return seq
+    step = len(seq) / keep
+    return [seq[int(i * step)] for i in range(keep)]
+
 def snapshot():
     with _lock:
         gen = _cur["gen"]; run = _runs.get(gen)
         gpus = [dict(_gpu[i]) for i in sorted(_gpu) if i >= 0]
-        hist = {i: list(_gpu_hist[i]) for i in sorted(_gpu_hist) if i >= 0}
-    out = {"ts": time.time(), "gpus": gpus, "gpu_hist": hist,
+        hist = {i: _decimate(_gpu_hist[i]) for i in sorted(_gpu_hist) if i >= 0}
+    out = {"ts": time.time(), "gpus": gpus, "gpu_hist": hist, "sample_dt": SAMPLE_DT,
            "overhead": {"events": _ev_count["n"],
                         "eps": round(_ev_count["n"] / max(time.time() - _ev_count["t0"], 1), 1),
-                        "note": "CUDA-event timing, async-collected; op-level instrumentation"},
+                        "note": f"CUDA-event op timing (async); GPU NVML @ {int(SAMPLE_DT*1000)}ms"},
            "bench": _bench_view()}
     if not run:
         out["run"] = None; out["warnings"] = []; return out
@@ -297,11 +342,13 @@ def snapshot():
     if rep and rep_ms:
         for op, ms in sorted(rep["ops"].items(), key=lambda x: -x[1]):
             bottleneck.append({"op": op, "ms": round(ms, 1), "pct": round(100 * ms / rep_ms, 1)})
+    step_bounds = [{"step": s, "start": run["steps"][s]["start"], "end": run["steps"][s]["end"]}
+                   for s in sorted(run["steps"]) if run["steps"][s]["start"]]
     out.update({"run": rp,
                 "rep_step": (sorted(run["steps"])[-1] if run["steps"] else None),
                 "bottleneck": bottleneck,
                 "amdahl": _amdahl(rep_ms, dict(rep["ops"])) if rep else [],
-                "multi_gpu": mg,
+                "multi_gpu": mg, "step_stats": _step_stats(run), "step_bounds": step_bounds,
                 "comparisons": _comparisons(run),
                 "warnings": _warnings(run, rep, mg)})
     return out
@@ -368,7 +415,7 @@ if __name__ == "__main__":
     ap.add_argument("--port", type=int, default=PORT); ap.add_argument("--bind", default="auto")
     a = ap.parse_args()
     _load_capture()
-    threading.Thread(target=_dmon, daemon=True).start()
+    threading.Thread(target=_nvml_poller, daemon=True).start()
     ip = _bind_ip(a.bind)
     print(f"[h3-dashboard v2] http://{ip}:{a.port}", flush=True)
     ThreadingHTTPServer((ip, a.port), H).serve_forever()

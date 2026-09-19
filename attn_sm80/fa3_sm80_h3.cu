@@ -10,9 +10,15 @@
 using bf16 = __nv_bfloat16;
 
 #define D        128
+#ifndef BM
 #define BM       64
+#endif
+#ifndef BN
 #define BN       64
-#define NWARPS   4
+#endif
+#define NKN      (BN/16)     // key-blocks of 16 within BN
+#define NNT      (BN/8)      // n-tiles of 8 within BN
+#define NWARPS   (BM/16)     // each warp owns 16 query rows
 #define NTHREADS (NWARPS*32)
 #ifndef STAGES
 #define STAGES   2
@@ -162,10 +168,12 @@ extern "C" __global__ void __launch_bounds__(NTHREADS, MINCTA) fa3_sm80_h3_kerne
             asm volatile("cp.async.wait_group 0;\n");
         }
 #else
+  #ifndef NOLOAD
         load_tile(sK, Kh, j*BN, N, BN);
         load_tile(sV, Vh, j*BN, N, BN);
         asm volatile("cp.async.commit_group;\n");
         asm volatile("cp.async.wait_group 0;\n");
+  #endif
 #endif
         __syncthreads();
         long long c1=clock64();
@@ -174,17 +182,17 @@ extern "C" __global__ void __launch_bounds__(NTHREADS, MINCTA) fa3_sm80_h3_kerne
         int k0 = j*BN;
 
         // ---- QK : S[16,64] for this warp ----
-        float s[8][4];
+        float s[NNT][4];
         #pragma unroll
-        for(int nt=0;nt<8;++nt){ s[nt][0]=s[nt][1]=s[nt][2]=s[nt][3]=0.f; }
+        for(int nt=0;nt<NNT;++nt){ s[nt][0]=s[nt][1]=s[nt][2]=s[nt][3]=0.f; }
         #pragma unroll
         for(int kt=0;kt<8;++kt){
-            uint32_t kf[4][4];
+            uint32_t kf[NKN][4];
             #pragma unroll
-            for(int kn=0;kn<4;++kn)        // batch all 4 ldmatrix (overlap latency)
+            for(int kn=0;kn<NKN;++kn)        // batch all 4 ldmatrix (overlap latency)
                 ldm_x4(kf[kn], Kc + (kn*16)*SD + kt*16, SD);
             #pragma unroll
-            for(int kn=0;kn<4;++kn){
+            for(int kn=0;kn<NKN;++kn){
                 uint32_t b0[2]={kf[kn][0],kf[kn][2]}; // keys 0-7
                 uint32_t b1[2]={kf[kn][1],kf[kn][3]}; // keys 8-15
                 mma16816(s[kn*2],   qf[kt], b0);
@@ -195,7 +203,7 @@ extern "C" __global__ void __launch_bounds__(NTHREADS, MINCTA) fa3_sm80_h3_kerne
         long long c2=clock64();
         // scale + tail mask (key >= N -> -inf)
         #pragma unroll
-        for(int nt=0;nt<8;++nt){
+        for(int nt=0;nt<NNT;++nt){
             int kbase = k0 + nt*8 + 2*t;
             #pragma unroll
             for(int c=0;c<4;++c){
@@ -208,7 +216,7 @@ extern "C" __global__ void __launch_bounds__(NTHREADS, MINCTA) fa3_sm80_h3_kerne
         // rowmax over the 64 keys, for row g (lo: c0,c1) and row g+8 (hi: c2,c3)
         float rmax_lo=-1e30f, rmax_hi=-1e30f;
         #pragma unroll
-        for(int nt=0;nt<8;++nt){
+        for(int nt=0;nt<NNT;++nt){
             rmax_lo = fmaxf(rmax_lo, fmaxf(s[nt][0], s[nt][1]));
             rmax_hi = fmaxf(rmax_hi, fmaxf(s[nt][2], s[nt][3]));
         }
@@ -221,7 +229,7 @@ extern "C" __global__ void __launch_bounds__(NTHREADS, MINCTA) fa3_sm80_h3_kerne
         // p = exp(s - m_new); rowsum
         float rs_lo=0.f, rs_hi=0.f;
         #pragma unroll
-        for(int nt=0;nt<8;++nt){
+        for(int nt=0;nt<NNT;++nt){
             s[nt][0]=__expf(s[nt][0]-nm_lo); s[nt][1]=__expf(s[nt][1]-nm_lo);
             s[nt][2]=__expf(s[nt][2]-nm_hi); s[nt][3]=__expf(s[nt][3]-nm_hi);
             rs_lo += s[nt][0]+s[nt][1];
@@ -247,9 +255,9 @@ extern "C" __global__ void __launch_bounds__(NTHREADS, MINCTA) fa3_sm80_h3_kerne
         // Build P A-fragments DIRECTLY from the softmax accumulator registers:
         // the mma accumulator layout (m16n8) == A-operand layout (m16k16), same
         // (groupID,tid) mapping, so no smem roundtrip / ldmatrix / shuffle needed.
-        uint32_t pf[4][4];
+        uint32_t pf[NKN][4];
         #pragma unroll
-        for(int kt2=0;kt2<4;++kt2){
+        for(int kt2=0;kt2<NKN;++kt2){
             __nv_bfloat162 q0=__floats2bfloat162_rn(s[2*kt2][0],   s[2*kt2][1]);
             __nv_bfloat162 q1=__floats2bfloat162_rn(s[2*kt2][2],   s[2*kt2][3]);
             __nv_bfloat162 q2=__floats2bfloat162_rn(s[2*kt2+1][0], s[2*kt2+1][1]);
@@ -261,7 +269,7 @@ extern "C" __global__ void __launch_bounds__(NTHREADS, MINCTA) fa3_sm80_h3_kerne
         }
 
         #pragma unroll
-        for(int kt2=0;kt2<4;++kt2){
+        for(int kt2=0;kt2<NKN;++kt2){
             uint32_t vf[8][4];
             #pragma unroll
             for(int dt=0;dt<8;++dt)        // batch all 8 V ldmatrix (overlap latency)
@@ -300,7 +308,8 @@ void fa3_sm80_h3_launch(torch::Tensor Q, torch::Tensor K, torch::Tensor V, torch
     int H = Q.size(1), N = Q.size(2);
     float scale = 1.0f / sqrtf((float)D);
     dim3 grid((N + BM - 1)/BM, H);
-    int smem_bytes = (2*STAGES*BN*SD) * sizeof(bf16);  // Q unioned into K; K,V x STAGES
+    int kv = 2*STAGES*BN*SD, qsz = BM*SD;              // Q unioned into K region
+    int smem_bytes = (kv > qsz ? kv : qsz) * sizeof(bf16);
     cudaError_t e = cudaFuncSetAttribute(fa3_sm80_h3_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_bytes);
     static int printed=0;
     if(!printed){ printed=1; printf("[fa3] smem_bytes=%d setattr=%s\n", smem_bytes, cudaGetErrorString(e)); }

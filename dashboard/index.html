@@ -96,7 +96,9 @@ function breakdown(run){
 }
 function stepsTable(run){
   const rows=run.steps.filter(s=>s.ms);
-  $("steps").innerHTML=`<table><tr><th>step</th><th class="n">ms</th><th class="n">Δ prev</th><th class="n">unacc%</th><th class="n">attn%</th></tr>`+
+  const ss=LAST&&LAST.step_stats;
+  const head=ss?`<div class="dim" style="margin-bottom:3px">cold s0 <b class="down">${f(ss.cold_ms,0)}ms</b> (+${f(ss.cold_overhead_ms,0)} warmup) · steady s1+ median <b class="mono">${f(ss.steady_median_ms,0)}ms</b> p95 ${f(ss.steady_p95_ms,0)} (n=${ss.n_steady}) · comparisons use s1+</div>`:'';
+  $("steps").innerHTML=head+`<table><tr><th>step</th><th class="n">ms</th><th class="n">Δ prev</th><th class="n">unacc%</th><th class="n">attn%</th></tr>`+
     rows.map((s,i)=>{const dp=i>0?s.ms-rows[i-1].ms:0;const attn=Object.entries(s.ops).filter(([k])=>k.startsWith("attn.")).reduce((a,[,v])=>a+v,0);
     return `<tr><td>s${s.step}</td><td class="n">${f(s.ms,0)}</td><td class="n ${dp<0?'up':dp>0?'down':''}">${i?(dp>0?'+':'')+f(dp,0):'—'}</td><td class="n">${f(100*(s.unaccounted||0)/s.ms,2)}</td><td class="n">${f(100*attn/s.ms,1)}</td></tr>`}).join("")+`</table>`;
 }
@@ -170,20 +172,33 @@ function gts(hist){
   const now=Date.now()/1000,W=1000,Hh=150;let mx=1;
   ids.forEach(i=>hist[i].forEach(s=>{if(s[M]!=null)mx=Math.max(mx,s[M])}));
   let svg="";
+  // step boundary overlays (correlate GPU activity with diffusion steps)
+  (LAST&&LAST.step_bounds||[]).forEach(b=>{
+    if(b.end==null)return;const x0=W-(now-b.start)/120*W,x1=W-(now-b.end)/120*W;
+    if(x1<0||x0>W)return;
+    svg+=`<rect x="${Math.max(x0,0).toFixed(1)}" y="0" width="${Math.max(Math.min(x1,W)-Math.max(x0,0),0.5).toFixed(1)}" height="${Hh}" fill="#4cc2ff" opacity="0.05"/>`;
+    svg+=`<line x1="${x1.toFixed(1)}" y1="0" x2="${x1.toFixed(1)}" y2="${Hh}" stroke="#33465a" stroke-width="0.5"/>`;
+    if(x0>0&&x0<W)svg+=`<text x="${(x0+2).toFixed(1)}" y="10" fill="#5a6b7d" font-size="8">s${b.step}</text>`;
+  });
   ids.forEach((i,gi)=>{const pts=hist[i].filter(s=>s[M]!=null).map(s=>{const x=W-(now-s.ts)/120*W;return `${x.toFixed(1)},${(Hh-(s[M]/mx)*(Hh-6)-2).toFixed(1)}`});
     if(pts.length>1)svg+=`<polyline points="${pts.join(' ')}" fill="none" stroke="${COL[gi%COL.length]}" stroke-width="1.3" opacity="0.9"/>`;});
   $("gts").innerHTML=svg;
   $("gtshint").innerHTML=`max ${f(mx,0)} · `+ids.map((i,gi)=>`<span style="color:${COL[gi%COL.length]}">GPU${i}</span>`).join(" ");
 }
 function multigpu(mg){
-  if(!mg||!mg.length){$("mg").innerHTML='<div class="na">no live GPU/step correlation (only during a live run)</div>';return;}
-  $("mg").innerHTML=`<table><tr><th>step</th><th class="n">wall s</th><th class="n">eff. GPUs</th><th class="n">active</th></tr>`+
-    mg.map(m=>`<tr><td>s${m.step}</td><td class="n">${f(m.wall_s,1)}</td><td class="n">${f(m.effective_active,2)}/${m.n_gpu}</td><td class="n">${m.active_count}</td></tr>`).join("")+`</table>`;
+  if(!mg||!mg.length){$("mg").innerHTML='<div class="na">no step data</div>';return;}
+  const live=mg.some(m=>m.samples>=3);
+  $("mg").innerHTML=(live?'':'<div class="na" style="margin-bottom:3px">no live GPU samples in these step windows (captured/replayed run) — integrates live during a real generation</div>')+
+    `<table><tr><th>step</th><th class="n">wall s</th><th class="n">eff. GPUs</th><th class="n">peak</th><th class="n">par.eff</th><th class="n">smp</th></tr>`+
+    mg.map(m=>`<tr><td>s${m.step}</td><td class="n">${f(m.wall_s,1)}</td><td class="n">${f(m.effective_active,2)}/${m.n_gpu}</td><td class="n">${m.peak_active}</td><td class="n">${m.parallel_efficiency!=null?f(m.parallel_efficiency,2):'—'}</td><td class="n">${m.samples}</td></tr>`).join("")+`</table>`;
 }
 function bench(b){
   if(!b){return;}
-  $("bench").innerHTML=`<table><tr><th>kernel</th><th class="n">ms</th><th class="n">vs FA2</th></tr>`+
-    b.rows.map(r=>`<tr><td>${r.kernel}${b.fastest&&r.kernel===b.fastest.kernel?' <span class="tag fast">fastest</span>':''}</td><td class="n">${f(r.latency_ms,1)}</td><td class="n ${r.vs_fa2_calc>1?'up':r.vs_fa2_calc<1?'down':''}">${r.vs_fa2_calc?f(r.vs_fa2_calc,2)+'×':'—'}</td></tr>`).join("")+`</table><div class="dim">${b.n} results kept · best never overwritten</div>`;
+  const ext=b.rows.some(r=>r.step_ms!=null||r.correctness!=null||r.regs!=null||r.occupancy!=null);
+  const eh=ext?'<th class="n">step ms</th><th class="n">err</th><th class="n">occ</th><th class="n">reg</th><th class="n">smem</th>':'';
+  $("bench").innerHTML=`<table><tr><th>kernel</th><th class="n">attn ms</th><th class="n">vs FA2</th>${eh}</tr>`+
+    b.rows.map(r=>{const er=ext?`<td class="n">${r.step_ms!=null?f(r.step_ms,0):'—'}</td><td class="n">${r.correctness!=null?(+r.correctness).toExponential(1):'—'}</td><td class="n">${r.occupancy!=null?f(r.occupancy,2):'—'}</td><td class="n">${r.regs!=null?r.regs:'—'}</td><td class="n">${r.smem_kb!=null?f(r.smem_kb,0)+'k':'—'}</td>`:'';
+    return `<tr><td>${r.kernel}${b.fastest&&r.kernel===b.fastest.kernel?' <span class="tag fast">fastest</span>':''}</td><td class="n">${f(r.latency_ms,1)}</td><td class="n ${r.vs_fa2_calc>1?'up':r.vs_fa2_calc<1?'down':''}">${r.vs_fa2_calc?f(r.vs_fa2_calc,2)+'×':'—'}</td>${er}</tr>`}).join("")+`</table><div class="dim">${b.n} results kept · best never overwritten · steady-state (s1+)</div>`;
 }
 function render(d){
   if(!d)return;LAST=d;$("dot").classList.add("on");$("clock").textContent=new Date(d.ts*1000).toLocaleTimeString();

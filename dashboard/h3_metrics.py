@@ -118,10 +118,14 @@ def _collector():
                     pass
         time.sleep(0.25)
 
-def record_bench(kernel, latency_ms, vs_fa2=None, config="", note=""):
-    """Post a kernel benchmark result to the dashboard history (never overwrites the best)."""
-    _post("/bench", {"kernel": kernel, "latency_ms": round(float(latency_ms), 3),
-                     "vs_fa2": vs_fa2, "config": config, "note": note, "ts": time.time()})
+def record_bench(kernel, latency_ms, vs_fa2=None, config="", note="", **extra):
+    """Post a kernel benchmark result to the dashboard history (never overwrites the best).
+    `latency_ms` = steady-state ATTENTION latency. Optional extra fields the dashboard shows:
+    step_ms, total_gen_ms, correctness, regs, smem_kb, occupancy, effective_gpus, git, seq_len, dtype."""
+    rec = {"kernel": kernel, "latency_ms": round(float(latency_ms), 3),
+           "vs_fa2": vs_fa2, "config": config, "note": note, "ts": time.time()}
+    rec.update(extra)
+    _post("/bench", rec)
 
 if ENABLED:
     threading.Thread(target=_collector, daemon=True).start()
