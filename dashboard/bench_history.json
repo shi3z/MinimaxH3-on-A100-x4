@@ -194,5 +194,19 @@
     "effective_gpus": 4,
     "seq_len": 66800,
     "dtype": "bf16/int8"
+  },
+  {
+    "kernel": "Ulysses-SP + distributed-VAE + streaming-save cut2151 (4xA100 GPU4-7)",
+    "latency_ms": 13261.4,
+    "vs_fa2": null,
+    "config": "persistent SPMD WORLD=4, distributed video-VAE decode (4-way temporal), streaming ffmpeg save",
+    "note": "steady 100.75s (was 121 stream-save, 151 persistent, 222.5 one-shot, 361 1-GPU); VAE decode 27->9s (isolated 24.4->6.3s @4GPU, bit-exact max_err 0); frames BIT-IDENTICAL; DiT now 79% of budget",
+    "ts": 1789877117.6000419,
+    "step_ms": 13261.4,
+    "total_gen_ms": 100750,
+    "correctness": "frames bit-identical (max_err 0)",
+    "effective_gpus": 4,
+    "seq_len": 66800,
+    "dtype": "bf16/int8/fp16-vae"
   }
 ]

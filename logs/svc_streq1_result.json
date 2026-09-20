@@ -3,16 +3,16 @@
  "world": 4,
  "seed": 700001,
  "rank0_encode": false,
- "wall_s": 118.28,
+ "wall_s": 99.67,
  "peak_mem_gb": 46.9,
  "dit_calls": 6,
- "dit_ms_median": 13223.3,
+ "dit_ms_median": 13209.0,
  "stage_ms": {
-  "request_parse": 0.4,
-  "dit_sp": 79614.0,
-  "vae_decode": 26872.4,
-  "mux_save": 5771.0,
-  "other_sync": 6018.3
+  "request_parse": 0.6,
+  "dit_sp": 79123.4,
+  "vae_decode": 9159.4,
+  "mux_save": 4925.4,
+  "other_sync": 6462.8
  },
  "mp4": "/mnt/ssdraid/project/comfy-h3/output/spgen/svc_streq1_r0_00001_.mp4"
 }

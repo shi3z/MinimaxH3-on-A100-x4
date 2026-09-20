@@ -3,19 +3,19 @@
  "world": 4,
  "seed": 500001,
  "rank0_encode": false,
- "wall_s": 187.25,
+ "wall_s": 171.1,
  "peak_mem_gb": 46.9,
  "dit_calls": 6,
- "dit_ms_median": 13123.9,
+ "dit_ms_median": 13057.4,
  "stage_ms": {
-  "request_parse": 0.5,
-  "model_load": 38982.3,
-  "ref_vae_encode": 3372.5,
-  "text_encode": 23152.2,
-  "dit_sp": 78595.6,
-  "vae_decode": 26894.5,
-  "mux_save": 5289.3,
-  "other_sync": 10967.5
+  "request_parse": 0.4,
+  "model_load": 41157.4,
+  "ref_vae_encode": 3389.6,
+  "text_encode": 22616.5,
+  "dit_sp": 78500.5,
+  "vae_decode": 9027.6,
+  "mux_save": 5785.9,
+  "other_sync": 10621.6
  },
- "mp4": "/mnt/ssdraid/project/comfy-h3/output/spgen/svc_warmup_r0_00003_.mp4"
+ "mp4": "/mnt/ssdraid/project/comfy-h3/output/spgen/svc_warmup_r0_00005_.mp4"
 }

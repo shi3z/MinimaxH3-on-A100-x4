@@ -241,3 +241,21 @@ Full-generation wall clock (cut2151, S=66800, 6-step turbo, GPU4-7):
 New steady critical path: DiT(SP) 81.7s (67%) · VAE decode 27.0s (22%, NEXT bottleneck) ·
 mux_save 6.5s (5%) · sync 6.4s (5%) · text/ref encode cached (~26s fresh cut). Bit-identical to 1-GPU.
 Next lever: VAE decode (27s, GPU-bound — temporal tiling / fp16).
+
+## Distributed 4-GPU VAE decode — full-gen 121->100.75s, bit-exact (2026-09-20)
+The video VAE decodes in independent temporal chunks (tokens_chunk_size=5, built-in token_overlap=2),
+so each of GPU4-7 decodes a round-robin subset of chunks (the chunk overlap IS the receptive-field
+halo -> no manual halo), per-chunk pixels NCCL-broadcast, unchanged stitch on every rank -> bit-identical.
+(Bug fixed: decouple compute from broadcast — phase1 all ranks decode owned chunks in parallel, phase2
+broadcast — else it serialized to ~24s.) VAE already fp16 (no fp16 lever). Video decode 94% in the ViT3D
+_adaptive_decode; audio decode 0.18s (left replicated).
+
+Isolated tiled-decode (bit-exact): 1-GPU 24.42s | 2-GPU 12.38s (1.97x, max_err 0) | 4-GPU 6.28s (3.89x, max_err 0).
+In-service VAE decode 27s -> 9.0s.
+
+Steady-state full-gen (persistent service, cut2151, warm): DiT(SP) 80.0s (79%) · VAE 9.1s (9%) ·
+mux_save 5.8s (6%) · sync 6.3s (6%) = **100.75s** (req1 99.67s). Per-GPU peak 46.9 GB. Bit-identical to 1-GPU.
+
+Full-gen progression: 361.1 (1-GPU) -> 222.5 (4-GPU one-shot) -> 151.3 (persistent) -> 121.2 (streaming save)
+-> **100.75s (distributed VAE)** = ~3.58x vs 1-GPU, bit-exact throughout. DiT(SP) is now 79% of the budget
+and is the hardware-capped SP ceiling (PCIe cross-pair topology); further gains need NVLink/NVSwitch hardware.

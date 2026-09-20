@@ -200,6 +200,91 @@ def _instrumented_orig_save(self, path, format=VT.VideoContainer.AUTO, codec=VT.
 
 VT.VideoFromComponents.save_to = _stream_save if STREAM_SAVE else _instrumented_orig_save
 
+# ---- distributed VIDEO VAE decode across ranks (bit-exact) ---------------------------------
+# The H3 video VAE decodes the latent in INDEPENDENT temporal chunks (tokens_chunk_size=5,
+# token_overlap=2 -> 7-token clips); each _adaptive_decode(clip_z) depends only on its clip and
+# the chunks are stitched afterward by deterministic blend. The final latent is identical on all
+# ranks (SPMD sampler), so each rank decodes a subset of chunks; the raw per-chunk pixels are
+# NCCL-broadcast to all ranks; every rank then runs the ORIGINAL stitch code unchanged -> the
+# result is bit-identical to the single-GPU decode. (Audio VAE decode is 0.18s -> left replicated.)
+DIST_VAE = os.environ.get("SP_DIST_VAE", "1") == "1"
+import comfy.ldm.minimax.vae as VAEMOD
+_orig_decode_temporal = VAEMOD.MiniMaxH3VideoVAE.decode_temporal
+_DT = {torch.float16: 0, torch.float32: 1, torch.bfloat16: 2}
+_DT_INV = {v: k for k, v in _DT.items()}
+
+def _dist_decode_temporal(self, z):
+    if WORLD == 1 or not dist.is_initialized():
+        return _orig_decode_temporal(self, z)
+    cs = self.tokens_chunk_size; ov = self.token_overlap
+    chunk_dec = cs * self.vae_ratio_t
+    split_count = int(self.token_drop > 0) + 1
+    pseudo = z.shape[2] + self.token_drop
+    pad_tokens = 0
+    rem = pseudo % cs
+    if rem != 0:
+        pad_tokens = cs - rem; pseudo += pad_tokens
+    num_chunks = pseudo // cs - int(self.token_drop > 0)
+    if num_chunks < 1:
+        pad_tokens += cs; num_chunks += 1
+    if pad_tokens > 0:
+        z = torch.cat([z, z[:, :, -1:, :, :].repeat(1, 1, pad_tokens, 1, 1)], dim=2)
+    output_frames = self._decode_temporal_frame_plan(z.shape[2], num_chunks, pad_tokens)
+
+    W = min(WORLD, num_chunks)
+    # phase 1: each rank decodes its OWNED chunks first — runs in PARALLEL across ranks, no
+    # collectives here (decoupling compute from the broadcast is essential: interleaving them
+    # serializes the ranks because everyone blocks on each owner's broadcast).
+    local = {}
+    for i in range(num_chunks):
+        if i % W == RANK:
+            t0 = i * cs; t1 = t0 + cs + ov
+            local[i] = self._adaptive_decode(z[:, :, t0:t1, :, :]).contiguous()
+    # phase 2: broadcast each chunk's pixels from its owner (owner already computed it in phase 1)
+    all_clip = [None] * num_chunks
+    for i in range(num_chunks):
+        owner = i % W
+        cd = local.get(i)
+        if owner == RANK:
+            meta = torch.tensor(list(cd.shape) + [_DT[cd.dtype]], device=z.device, dtype=torch.long)
+        else:
+            meta = torch.empty(6, device=z.device, dtype=torch.long)
+        dist.broadcast(meta, src=owner)
+        if owner != RANK:
+            cd = torch.empty(tuple(meta[:5].tolist()), device=z.device, dtype=_DT_INV[int(meta[5].item())])
+        dist.broadcast(cd, src=owner)
+        all_clip[i] = cd
+
+    # --- stitch: ORIGINAL logic verbatim, using gathered per-chunk pixels (bit-exact) ---
+    dec = None; dec_overlap = None; write_pos = 0
+    def write_part(part):
+        nonlocal dec, write_pos
+        pf = part.shape[2]
+        if pf <= 0: return
+        if dec is None:
+            osh = list(part.shape); osh[2] = output_frames
+            dec = torch.empty(osh, dtype=part.dtype, device=part.device)
+        cf = min(pf, max(0, dec.shape[2] - write_pos))
+        if cf > 0:
+            dec[:, :, write_pos:write_pos + cf, :, :].copy_(part[:, :, :cf, :, :]); write_pos += cf
+    for i in range(num_chunks):
+        clip_dec = all_clip[i]
+        for j in range(split_count):
+            fs = j * chunk_dec; fe = min(fs + chunk_dec, clip_dec.shape[2])
+            cchunk = clip_dec[:, :, fs:fe, :, :][:, :, self.frame_pre_padding:, :, :]
+            if j == 0:
+                if dec_overlap is not None:
+                    cchunk = self.blend(dec_overlap, cchunk, self.frame_overlap, dim=-3); dec_overlap = None
+                write_part(cchunk)
+            else:
+                dec_overlap = cchunk.contiguous()
+        if i == num_chunks - 1 and dec_overlap is not None:
+            write_part(dec_overlap); dec_overlap = None
+    return dec
+
+if DIST_VAE:
+    VAEMOD.MiniMaxH3VideoVAE.decode_temporal = _dist_decode_temporal
+
 # ---- persistent executor (RAM_PRESSURE cache keeps loaded models across requests) ----
 from comfy_worker import build_graph
 cache_ram = min(10.0, max(2.0, mm.total_ram * 0.10 / 1024.0))
