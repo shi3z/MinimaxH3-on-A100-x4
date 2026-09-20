@@ -139,5 +139,18 @@
     "seq_len": 49152,
     "dtype": "bf16",
     "git": "microbench"
+  },
+  {
+    "kernel": "H3-4GPU-SP (full step)",
+    "latency_ms": 5694.7,
+    "vs_fa2": null,
+    "config": "seq-sharded GPU4-7, Ulysses attn, S=40868, bit-exact",
+    "correctness": 0.0,
+    "step_ms": 6034.7,
+    "note": "3.79x full step vs 1-GPU 22891ms; 24.76GB/GPU",
+    "git": "integration",
+    "seq_len": 40868,
+    "dtype": "bf16",
+    "occupancy": null
   }
 ]

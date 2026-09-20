@@ -186,6 +186,31 @@ for 2-GPU; PCIe pair barely reaches 1.5×.
 Harness: bench/ulysses_attn_microbench.py (torchrun --nproc_per_node=N). Production seam already exists
 (model.run_blocks + harness/sp_runtime.py, validated bit-exact through the seam) — integration-ready.
 
+## FULL H3 4-GPU integration — MEASURED (2026-09-20), targets exceeded
+Sequence-sharded execution across GPU4-7: shard hidden state ONCE at run_blocks entry, run all 50
+blocks LOCAL on the token-shard (norm/adaln/QKV/RoPE/out_proj/residual/FFN are per-token -> valid
+sharded), Ulysses all-to-all ONLY inside attention, all-gather ONCE at the end. No inter-layer
+gather. Harness: harness/sp_full_step.py + run_full_sp.sh (SP_TIMING per-op). Real per-step inputs
+(captured io_blockloop), steady s1+.
+
+| metric | 1-GPU | 4-GPU (GPU4-7) | speedup |
+|---|---|---|---|
+| run_blocks / step | 18661 ms | **5694.7 ms** | **3.28×** |
+| **full step (+~340ms prep/final)** | ~22891 ms | **6034.7 ms = 6.03 s** | **3.79×** |
+| correctness | ref | **max_err 0.0 (bit-exact)** | — |
+| peak mem / GPU | ~30 GB | **24.76 GB** | — |
+
+Per-op / step (summed over 50 layers, MAX across ranks):
+fa2_local 3273.7ms (56.0%) · a2a_fwd 957.1 (16.4%) · a2a_inv 367.4 (6.3%) · ffn 612.7 (10.5%) ·
+qkv 350.5 (6.0%) · out_proj 133.6 (2.3%) · norm_mod 94.4 (1.6%) · residual 43.8 (0.7%) · gather 15.2 (0.3%).
+=> attention 4598ms (78.6%), communication (all2all+gather) 1340ms (22.9%), non-attention local 1235ms (21.1%).
+
+Why 3.79× (beats the attention-only Amdahl 9.6s/step = 2.4×): the non-attention 21% (FFN/QKV/norm) is
+ALSO sharded — every GPU does 1/4 of the whole block, not just attention. Comm is 22.9% (PCIe cross-pair
+all-to-all); that is the remaining headroom (ring/overlap or NVLink-only topology could shave it), but
+6.03s already exceeds the 7-8s stretch. **Immediate target <10s: met. Stretch 7-8s: exceeded (6.03s).**
+Remaining: productionize into the live ComfyUI inference path (4-process SPMD) so oracle/fleet gens use it.
+
 ## Strategy (revised by measurement)
 Attention >50% → prioritize attention. Single-GPU exact maxed → implement **4-GPU Ulysses sequence-parallel denoiser** (exact). Then AdaLN precompute + rope cache + CUDA graph for the residual overhead; SageAttention as a separate quality-flagged experiment.
 

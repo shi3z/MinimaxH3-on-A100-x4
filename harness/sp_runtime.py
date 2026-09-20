@@ -17,6 +17,35 @@ RANK = int(os.environ.get("RANK", "0"))
 WORLD = int(os.environ.get("WORLD_SIZE", "1"))
 _INIT = False
 
+# ---- optional per-op timing (SP_TIMING=1): CUDA-event category accumulators, summed per run_blocks ----
+_TIMING = os.environ.get("SP_TIMING") == "1"
+_acc = {}          # category -> list of (start_evt, end_evt)
+_last = {}         # category -> summed ms for the most recent run_blocks call (rank-local)
+
+class _tr:
+    def __init__(self, cat): self.cat = cat
+    def __enter__(self):
+        if _TIMING:
+            self.s = torch.cuda.Event(enable_timing=True); self.e = torch.cuda.Event(enable_timing=True)
+            self.s.record()
+        return self
+    def __exit__(self, *a):
+        if _TIMING:
+            self.e.record(); _acc.setdefault(self.cat, []).append((self.s, self.e))
+        return False
+
+def _finalize_timing():
+    global _acc
+    if not _TIMING: return
+    torch.cuda.synchronize()
+    _last.clear()
+    for cat, pairs in _acc.items():
+        _last[cat] = sum(s.elapsed_time(e) for s, e in pairs)
+    _acc = {}
+
+def get_timing():
+    return dict(_last)
+
 def init():
     global _INIT
     if WORLD > 1 and not dist.is_initialized():
@@ -39,24 +68,29 @@ def a2a_head_to_seq(x, world, H):     # [1,Hl,S,d] -> [1,H,Sl,d]
 def _sp_attn_forward(self, x, rope_freqs=None, transformer_options={}):
     import comfy.model_management, comfy.quant_ops
     s = x.shape[0]
-    q, k, v = self.qkv_proj(x).split(self.heads * self.head_dim, dim=-1)
-    v = v.view(s, self.heads, self.head_dim)
-    if rope_freqs is not None:
-        q = q.view(1, s, self.heads, self.head_dim); k = k.view(1, s, self.heads, self.head_dim)
-        qw = comfy.model_management.cast_to(self.q_norm.weight, device=x.device)
-        kw = comfy.model_management.cast_to(self.k_norm.weight, device=x.device)
-        rot = rope_freqs.shape[-3] * 2
-        comfy.quant_ops.ck.rms_rope_split_half_(q, k, rope_freqs, qw, kw, epsilon=self.q_norm.eps, rot_dim=rot)
-        q = q[0]; k = k[0]
-    else:
-        q = self.q_norm(q.view(s, self.heads, self.head_dim)); k = self.k_norm(k.view(s, self.heads, self.head_dim))
-    q = q.transpose(0, 1).unsqueeze(0); k = k.transpose(0, 1).unsqueeze(0); v = v.transpose(0, 1).unsqueeze(0)
-    qh = a2a_seq_to_head(q, WORLD); kh = a2a_seq_to_head(k, WORLD); vh = a2a_seq_to_head(v, WORLD)
-    with sdpa_kernel([SDPBackend.FLASH_ATTENTION]):
-        oh = torch.nn.functional.scaled_dot_product_attention(qh, kh, vh)
-    o = a2a_head_to_seq(oh, WORLD, self.heads)
-    o = o.transpose(1, 2).reshape(s, self.heads * self.head_dim)
-    return self.out_proj(o)
+    with _tr("qkv"):
+        q, k, v = self.qkv_proj(x).split(self.heads * self.head_dim, dim=-1)
+        v = v.view(s, self.heads, self.head_dim)
+        if rope_freqs is not None:
+            q = q.view(1, s, self.heads, self.head_dim); k = k.view(1, s, self.heads, self.head_dim)
+            qw = comfy.model_management.cast_to(self.q_norm.weight, device=x.device)
+            kw = comfy.model_management.cast_to(self.k_norm.weight, device=x.device)
+            rot = rope_freqs.shape[-3] * 2
+            comfy.quant_ops.ck.rms_rope_split_half_(q, k, rope_freqs, qw, kw, epsilon=self.q_norm.eps, rot_dim=rot)
+            q = q[0]; k = k[0]
+        else:
+            q = self.q_norm(q.view(s, self.heads, self.head_dim)); k = self.k_norm(k.view(s, self.heads, self.head_dim))
+        q = q.transpose(0, 1).unsqueeze(0); k = k.transpose(0, 1).unsqueeze(0); v = v.transpose(0, 1).unsqueeze(0)
+    with _tr("a2a_fwd"):
+        qh = a2a_seq_to_head(q, WORLD); kh = a2a_seq_to_head(k, WORLD); vh = a2a_seq_to_head(v, WORLD)
+    with _tr("fa2_local"):
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION]):
+            oh = torch.nn.functional.scaled_dot_product_attention(qh, kh, vh)
+    with _tr("a2a_inv"):
+        o = a2a_head_to_seq(oh, WORLD, self.heads)
+    with _tr("out_proj"):
+        o = o.transpose(1, 2).reshape(s, self.heads * self.head_dim)
+        return self.out_proj(o)
 
 # ---- A-1: comm/compute overlap (exact) ----------------------------------------
 # K,V are gathered once (must precede any FA-2). The Q input all-to-all and the O
@@ -127,6 +161,23 @@ def _shard_segments(segs, lo, hi):
         if A < B: out.append((A - lo, B - lo, row))
     return out
 
+def _sp_block_timed(self, x, t_emb, mod_segments, rope_freqs, transformer_options={}):
+    # timing-instrumented replica of DiTBlock.forward: separates adaln/norm/residual from ffn,
+    # and lets the attention (self.attn, patched) time its own sub-ops. Only used when SP_TIMING=1.
+    import comfy.ldm.minimax.model as MM
+    with _tr("norm_mod"):
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaln_proj(t_emb)
+        h = MM._mod_scale_shift(self.norm1(x), shift_msa, scale_msa, mod_segments)
+    a = self.attn(h, rope_freqs=rope_freqs, transformer_options=transformer_options)
+    with _tr("residual"):
+        x = MM._mod_gate(x, gate_msa, a, mod_segments)
+    with _tr("norm_mod"):
+        h = MM._mod_scale_shift(self.norm2(x), shift_mlp, scale_mlp, mod_segments)
+    with _tr("ffn"):
+        m = self.mlp(h)
+    with _tr("residual"):
+        return MM._mod_gate(x, gate_mlp, m, mod_segments)
+
 def _sp_run_blocks(self, h, t_emb, mod_segments, rope_freqs, transformer_options={}):
     if WORLD == 1:
         return _orig_run_blocks(self, h, t_emb, mod_segments, rope_freqs, transformer_options)
@@ -137,11 +188,18 @@ def _sp_run_blocks(self, h, t_emb, mod_segments, rope_freqs, transformer_options
     h_loc = h[lo:hi].contiguous()
     rope_loc = rope_freqs[:, lo:hi].contiguous() if rope_freqs is not None else None
     segs_loc = _shard_segments(mod_segments, lo, hi)
+    blkfn = _sp_block_timed if _TIMING else None
     for blk in self.blocks:
-        h_loc = blk(h_loc, t_emb, segs_loc, rope_loc, transformer_options=transformer_options)
-    gathered = [torch.empty_like(h_loc) for _ in range(WORLD)]
-    dist.all_gather(gathered, h_loc.contiguous())
-    return torch.cat(gathered, dim=0)
+        if blkfn is not None:
+            h_loc = blkfn(blk, h_loc, t_emb, segs_loc, rope_loc, transformer_options=transformer_options)
+        else:
+            h_loc = blk(h_loc, t_emb, segs_loc, rope_loc, transformer_options=transformer_options)
+    with _tr("gather"):
+        gathered = [torch.empty_like(h_loc) for _ in range(WORLD)]
+        dist.all_gather(gathered, h_loc.contiguous())
+        out = torch.cat(gathered, dim=0)
+    _finalize_timing()
+    return out
 
 _orig_run_blocks = None
 def install():
@@ -154,4 +212,5 @@ def install():
     MM.MiniMaxH3Model.run_blocks = _sp_run_blocks
     if RANK == 0:
         mode = f"overlap(P={_PIECES})" if overlap else "blocking"
-        print(f"[sp_runtime] installed (WORLD={WORLD}) — run_blocks + Ulysses attention patched [{mode}]", flush=True)
+        print(f"[sp_runtime] installed (WORLD={WORLD}) — run_blocks + Ulysses attention patched [{mode}]"
+              + (" [SP_TIMING]" if _TIMING else ""), flush=True)

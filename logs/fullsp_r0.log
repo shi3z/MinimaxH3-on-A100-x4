@@ -1,0 +1,24 @@
+[sp_runtime] installed (WORLD=4) — run_blocks + Ulysses attention patched [blocking] [SP_TIMING]
+[correctness] 4-GPU full block-loop vs 1-GPU ground truth: max_err=0.000e+00 mean=0.000e+00
+/mnt/ssdraid/project/comfy-h3/.venv-exp/lib/python3.10/site-packages/torch/distributed/c10d_logger.py:83: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  return func(*args, **kwargs)
+
+=== 4-GPU FULL H3 (sequence-sharded, GPU4-7, S=40868, steady s1+) ===
+run_blocks/step (median):     5694.7 ms   (1-GPU baseline 18661 ms -> 3.28x)
+full step (+340ms prep/final):   6034.7 ms = 6.03 s   (1-GPU ~22891 ms -> 3.79x)
+peak mem/GPU (max rank):       24.76 GB
+per-op / step (summed over 50 layers, ms, MAX across ranks):
+    norm_mod       94.4   (  1.6%)
+    qkv           350.5   (  6.0%)
+    a2a_fwd       957.1   ( 16.4%)
+    fa2_local    3273.7   ( 56.0%)
+    a2a_inv       367.4   (  6.3%)
+    out_proj      133.6   (  2.3%)
+    residual       43.8   (  0.7%)
+    ffn           612.7   ( 10.5%)
+    gather         15.2   (  0.3%)
+  -> attention (a2a_fwd+fa2_local+a2a_inv):   4598.2 ms (78.6%)
+  -> communication (all2all+gather):          1339.7 ms (22.9%)
+  -> non-attention local (norm/qkv/out/residual/ffn):   1235.1 ms (21.1%)
+  -> measured/unaccounted vs run_blocks:   -153.8 ms
+all steady step_ms: [5692.3, 5701.8, 5696.8, 5692.7, 5694.7]
