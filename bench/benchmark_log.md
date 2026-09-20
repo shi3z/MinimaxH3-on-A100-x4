@@ -165,6 +165,27 @@ step redundancy to cache, and the box has no cross-pair NVLink. The one proven w
 Remaining real options are hardware (SXM/NVLink box → SP scales toward 4×; or Hopper → SageAttn v2
 fp8) or accepting current throughput.
 
+## Multi-GPU attention — context/sequence parallelism microbench (2026-09-20, uncontended)
+Goal shift: stop tuning single-GPU (FA-2 is the ceiling); make ONE H3 gen use multiple A100.
+Topology (`nvidia-smi topo -m`): NUMA1 = GPU4-7, NVLink pairs {4,5}=NV12 {6,7}=NV12, cross-pair=NODE
+(PCIe within NUMA). Best 4-GPU set = 4,5,6,7 (same NUMA). 2-GPU best = an NVLink pair.
+
+Isolated attention microbench (heads=56 d=128 bf16, Ulysses all-to-all, EXACT), same-S comparison:
+| config | S=40960 | S=49152 | comm/all2all | correctness |
+|---|---|---|---|---|
+| 1-GPU FA-2 | 254 ms | 367-370 ms | — | ref |
+| **2-GPU NVLink {4,5}** | 134 ms = **1.91×** | 193 ms = **1.92×** | 1.7-2.0 ms | max_err 0.0 |
+| 2-GPU PCIe {4,6} (NODE) | 181 ms = 1.42× | 243 ms = 1.53× | 13.7-15.0 ms | (topology contrast) |
+| **4-GPU {4,5,6,7}** | 85 ms = **2.98×** | 117 ms = **3.14×** | 5.7-6.8 ms | **max_err 0.0** |
+
+**Both targets MET, bit-exact: 2-GPU >1.5× (1.92× on NVLink), 4-GPU >2.5× (3.14×).** 50-layer attention
+18.36s -> 5.85s at S=49152. Ring attention NOT needed here: Ulysses all-to-all comm is already only
+~6.6% of the 4-GPU layer time (5.7ms comm vs 85ms compute), so comm/compute overlap (ring's advantage)
+has little to hide — ring pays off only when comm is large (cross-NUMA, or >4 GPUs). Use an NVLink pair
+for 2-GPU; PCIe pair barely reaches 1.5×.
+Harness: bench/ulysses_attn_microbench.py (torchrun --nproc_per_node=N). Production seam already exists
+(model.run_blocks + harness/sp_runtime.py, validated bit-exact through the seam) — integration-ready.
+
 ## Strategy (revised by measurement)
 Attention >50% → prioritize attention. Single-GPU exact maxed → implement **4-GPU Ulysses sequence-parallel denoiser** (exact). Then AdaLN precompute + rope cache + CUDA graph for the residual overhead; SageAttention as a separate quality-flagged experiment.
 

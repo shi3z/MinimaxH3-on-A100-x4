@@ -98,6 +98,155 @@ __device__ unsigned long long g_prof[5];  // wait, qk, softmax, pv, epilogue (cy
 #ifndef MINCTA
 #define MINCTA 2
 #endif
+#ifdef PROFILE
+  #define CLK(x) long long x=clock64()
+#else
+  #define CLK(x)
+#endif
+
+// ---- reusable compute blocks (shared by v0 and v2 pipelined kernel) ----
+__device__ __forceinline__ void qk_compute(const uint32_t qf[8][4], const bf16* Kc, float s[NNT][4]){
+    #pragma unroll
+    for(int nt=0;nt<NNT;++nt){ s[nt][0]=s[nt][1]=s[nt][2]=s[nt][3]=0.f; }
+    #pragma unroll
+    for(int kt=0;kt<8;++kt){
+        uint32_t kf[NKN][4];
+        #pragma unroll
+        for(int kn=0;kn<NKN;++kn) ldm_x4(kf[kn], Kc + (kn*16)*SD + kt*16, SD);
+        #pragma unroll
+        for(int kn=0;kn<NKN;++kn){
+            uint32_t b0[2]={kf[kn][0],kf[kn][2]}, b1[2]={kf[kn][1],kf[kn][3]};
+            mma16816(s[kn*2],   qf[kt], b0);
+            mma16816(s[kn*2+1], qf[kt], b1);
+        }
+    }
+}
+
+__device__ __forceinline__ void softmax_step(float s[NNT][4], int k0, int N, float scale, int t,
+        float& m_lo, float& m_hi, float& l_lo, float& l_hi, float acc[16][4], uint32_t pf[NKN][4]){
+    #pragma unroll
+    for(int nt=0;nt<NNT;++nt){
+        int kbase = k0 + nt*8 + 2*t;
+        #pragma unroll
+        for(int c=0;c<4;++c){ int key=kbase+(c&1); float v=s[nt][c]*scale; s[nt][c]=(key<N)?v:-1e30f; }
+    }
+    float rmax_lo=-1e30f, rmax_hi=-1e30f;
+    #pragma unroll
+    for(int nt=0;nt<NNT;++nt){ rmax_lo=fmaxf(rmax_lo,fmaxf(s[nt][0],s[nt][1])); rmax_hi=fmaxf(rmax_hi,fmaxf(s[nt][2],s[nt][3])); }
+    rmax_lo=warp_row_max4(rmax_lo); rmax_hi=warp_row_max4(rmax_hi);
+    float nm_lo=fmaxf(m_lo,rmax_lo), nm_hi=fmaxf(m_hi,rmax_hi);
+    float al_lo=__expf(m_lo-nm_lo), al_hi=__expf(m_hi-nm_hi);
+    float rs_lo=0.f, rs_hi=0.f;
+    #pragma unroll
+    for(int nt=0;nt<NNT;++nt){
+        s[nt][0]=__expf(s[nt][0]-nm_lo); s[nt][1]=__expf(s[nt][1]-nm_lo);
+        s[nt][2]=__expf(s[nt][2]-nm_hi); s[nt][3]=__expf(s[nt][3]-nm_hi);
+        rs_lo+=s[nt][0]+s[nt][1]; rs_hi+=s[nt][2]+s[nt][3];
+    }
+    rs_lo=warp_row_sum4(rs_lo); rs_hi=warp_row_sum4(rs_hi);
+    l_lo=l_lo*al_lo+rs_lo; l_hi=l_hi*al_hi+rs_hi; m_lo=nm_lo; m_hi=nm_hi;
+    #pragma unroll
+    for(int i=0;i<16;++i){ acc[i][0]*=al_lo; acc[i][1]*=al_lo; acc[i][2]*=al_hi; acc[i][3]*=al_hi; }
+    #pragma unroll
+    for(int kt2=0;kt2<NKN;++kt2){
+        __nv_bfloat162 q0=__floats2bfloat162_rn(s[2*kt2][0],s[2*kt2][1]);
+        __nv_bfloat162 q1=__floats2bfloat162_rn(s[2*kt2][2],s[2*kt2][3]);
+        __nv_bfloat162 q2=__floats2bfloat162_rn(s[2*kt2+1][0],s[2*kt2+1][1]);
+        __nv_bfloat162 q3=__floats2bfloat162_rn(s[2*kt2+1][2],s[2*kt2+1][3]);
+        pf[kt2][0]=*reinterpret_cast<uint32_t*>(&q0); pf[kt2][1]=*reinterpret_cast<uint32_t*>(&q1);
+        pf[kt2][2]=*reinterpret_cast<uint32_t*>(&q2); pf[kt2][3]=*reinterpret_cast<uint32_t*>(&q3);
+    }
+}
+
+__device__ __forceinline__ void pv_compute(const uint32_t pf[NKN][4], const bf16* Vc, float acc[16][4]){
+    #pragma unroll
+    for(int kt2=0;kt2<NKN;++kt2){
+        uint32_t vf[8][4];
+        #pragma unroll
+        for(int dt=0;dt<8;++dt) ldm_x4_trans(vf[dt], Vc + (kt2*16)*SD + dt*16, SD);
+        #pragma unroll
+        for(int dt=0;dt<8;++dt){
+            uint32_t b0[2]={vf[dt][0],vf[dt][1]}, b1[2]={vf[dt][2],vf[dt][3]};
+            mma16816(acc[dt*2],   pf[kt2], b0);
+            mma16816(acc[dt*2+1], pf[kt2], b1);
+        }
+    }
+}
+
+// ===================== v2: software-pipelined (ping-pong) kernel =====================
+// Overlaps the cp.async K/V load of tile i+1 behind softmax(i)+PV(i) compute (the load is
+// the measured 38% bottleneck), and staggers QK(i+1) after the wait. Register-resident P,
+// PAD=8. Double-buffered K/V (STAGES>=2 required). Occupancy measured, not assumed.
+extern "C" __global__ void __launch_bounds__(NTHREADS, MINCTA) fa3_pp_kernel(
+        const bf16* __restrict__ Q, const bf16* __restrict__ K,
+        const bf16* __restrict__ V, bf16* __restrict__ O, int N, float scale)
+{
+    const int mtile=blockIdx.x, h=blockIdx.y;
+    const int warp=threadIdx.x>>5, lane=threadIdx.x&31, g=lane>>2, t=lane&3;
+    const bf16* Qh=Q+(long)h*N*D; const bf16* Kh=K+(long)h*N*D;
+    const bf16* Vh=V+(long)h*N*D; bf16* Oh=O+(long)h*N*D;
+    extern __shared__ bf16 smem[];
+    bf16* sQ=smem; bf16* sK=smem; bf16* sV=sK+STAGES*BN*SD;
+    const int row0=mtile*BM;
+
+    load_tile(sQ, Qh, row0, N, BM);
+    asm volatile("cp.async.commit_group;\n"); asm volatile("cp.async.wait_group 0;\n");
+    __syncthreads();
+    uint32_t qf[8][4];
+    #pragma unroll
+    for(int kt=0;kt<8;++kt) ldm_x4(qf[kt], sQ+(warp*16)*SD+kt*16, SD);
+    __syncthreads();
+
+    float acc[16][4];
+    #pragma unroll
+    for(int i=0;i<16;++i){ acc[i][0]=acc[i][1]=acc[i][2]=acc[i][3]=0.f; }
+    float m_lo=-1e30f,m_hi=-1e30f,l_lo=0.f,l_hi=0.f;
+    const int NT=(N+BN-1)/BN;
+
+    // prime: load tile0 into buf0, compute QK -> s
+    load_tile(sK, Kh, 0, N, BN); load_tile(sV, Vh, 0, N, BN);
+    asm volatile("cp.async.commit_group;\n"); asm volatile("cp.async.wait_group 0;\n");
+    __syncthreads();
+    float s[NNT][4];
+    qk_compute(qf, sK, s);            // buf0 K
+
+#ifdef PROFILE
+    const bool prof=(blockIdx.x==0&&blockIdx.y==0&&threadIdx.x==0);
+#endif
+    for(int i=0;i<NT;++i){
+        int cur=i&1, nxt=(i+1)&1;
+        // issue async prefetch of tile i+1 (overlaps softmax+PV below)
+        if(i+1<NT){
+            load_tile(sK+nxt*BN*SD, Kh, (i+1)*BN, N, BN);
+            load_tile(sV+nxt*BN*SD, Vh, (i+1)*BN, N, BN);
+            asm volatile("cp.async.commit_group;\n");
+        }
+        CLK(a0);
+        uint32_t pf[NKN][4];
+        softmax_step(s, i*BN, N, scale, t, m_lo,m_hi,l_lo,l_hi, acc, pf);  // CUDA cores
+        CLK(a1);
+        pv_compute(pf, sV+cur*BN*SD, acc);                                  // tensor cores
+        CLK(a2);
+        if(i+1<NT){
+            asm volatile("cp.async.wait_group 0;\n");   // prefetch done (hidden behind above)
+            __syncthreads();                             // buf nxt visible; buf cur reads done
+            CLK(a3);
+            qk_compute(qf, sK+nxt*BN*SD, s);             // next tile scores (buf nxt K)
+            __syncthreads();                             // guard buf cur before i+1 overwrites it
+            CLK(a4);
+#ifdef PROFILE
+            if(prof){ g_prof[2]+=a1-a0; g_prof[3]+=a2-a1; g_prof[0]+=a3-a2; g_prof[1]+=a4-a3; }
+#endif
+        }
+    }
+    // epilogue
+    #pragma unroll
+    for(int nt2=0;nt2<16;++nt2){
+        int d=nt2*8+2*t; int gr_lo=row0+warp*16+g, gr_hi=gr_lo+8;
+        if(gr_lo<N){ Oh[(long)gr_lo*D+d+0]=__float2bfloat16(acc[nt2][0]/l_lo); Oh[(long)gr_lo*D+d+1]=__float2bfloat16(acc[nt2][1]/l_lo); }
+        if(gr_hi<N){ Oh[(long)gr_hi*D+d+0]=__float2bfloat16(acc[nt2][2]/l_hi); Oh[(long)gr_hi*D+d+1]=__float2bfloat16(acc[nt2][3]/l_hi); }
+    }
+}
 
 // grid = (num_m_tiles, H), block = NTHREADS
 extern "C" __global__ void __launch_bounds__(NTHREADS, MINCTA) fa3_sm80_h3_kernel(
@@ -153,9 +302,11 @@ extern "C" __global__ void __launch_bounds__(NTHREADS, MINCTA) fa3_sm80_h3_kerne
     asm volatile("cp.async.commit_group;\n");
 #endif
 
+#ifdef PROFILE
     const bool prof = (blockIdx.x==0 && blockIdx.y==0 && threadIdx.x==0);
+#endif
     for(int j=0;j<NT;++j){
-        long long c0=clock64();
+        CLK(c0);
         int cur = j % STAGES;
 #if STAGES>1
         if(j+1 < NT){
@@ -176,7 +327,7 @@ extern "C" __global__ void __launch_bounds__(NTHREADS, MINCTA) fa3_sm80_h3_kerne
   #endif
 #endif
         __syncthreads();
-        long long c1=clock64();
+        CLK(c1);
         bf16* Kc = sK + cur*BN*SD;
         bf16* Vc = sV + cur*BN*SD;
         int k0 = j*BN;
@@ -200,7 +351,7 @@ extern "C" __global__ void __launch_bounds__(NTHREADS, MINCTA) fa3_sm80_h3_kerne
             }
         }
 
-        long long c2=clock64();
+        CLK(c2);
         // scale + tail mask (key >= N -> -inf)
         #pragma unroll
         for(int nt=0;nt<NNT;++nt){
@@ -249,7 +400,7 @@ extern "C" __global__ void __launch_bounds__(NTHREADS, MINCTA) fa3_sm80_h3_kerne
             acc[i][2]*=al_hi; acc[i][3]*=al_hi;
         }
 
-        long long c3=clock64();
+        CLK(c3);
 
         // ---- PV : O[16,128] += P[16,64] @ V[64,128] ----
         // Build P A-fragments DIRECTLY from the softmax accumulator registers:
@@ -283,8 +434,10 @@ extern "C" __global__ void __launch_bounds__(NTHREADS, MINCTA) fa3_sm80_h3_kerne
             }
         }
         __syncthreads();   // (E) all reads of Kc/Vc/sP done before buffer reuse/overwrite
+#ifdef PROFILE
         if(prof){ long long c4=clock64();
             g_prof[0]+=c1-c0; g_prof[1]+=c2-c1; g_prof[2]+=c3-c2; g_prof[3]+=c4-c3; }
+#endif
     }
 
     // ---- epilogue : O = acc / l, store ----
@@ -310,12 +463,52 @@ void fa3_sm80_h3_launch(torch::Tensor Q, torch::Tensor K, torch::Tensor V, torch
     dim3 grid((N + BM - 1)/BM, H);
     int kv = 2*STAGES*BN*SD, qsz = BM*SD;              // Q unioned into K region
     int smem_bytes = (kv > qsz ? kv : qsz) * sizeof(bf16);
-    cudaError_t e = cudaFuncSetAttribute(fa3_sm80_h3_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_bytes);
-    static int printed=0;
-    if(!printed){ printed=1; printf("[fa3] smem_bytes=%d setattr=%s\n", smem_bytes, cudaGetErrorString(e)); }
+    cudaFuncSetAttribute(fa3_sm80_h3_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_bytes);
     fa3_sm80_h3_kernel<<<grid, NTHREADS, smem_bytes>>>(
         (const bf16*)Q.data_ptr(), (const bf16*)K.data_ptr(),
         (const bf16*)V.data_ptr(), (bf16*)O.data_ptr(), N, scale);
+}
+
+void fa3_pp_launch(torch::Tensor Q, torch::Tensor K, torch::Tensor V, torch::Tensor O){
+    int H = Q.size(1), N = Q.size(2);
+    float scale = 1.0f / sqrtf((float)D);
+    dim3 grid((N + BM - 1)/BM, H);
+    int kv = 2*STAGES*BN*SD, qsz = BM*SD;
+    int smem_bytes = (kv > qsz ? kv : qsz) * sizeof(bf16);
+    cudaFuncSetAttribute(fa3_pp_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_bytes);
+    fa3_pp_kernel<<<grid, NTHREADS, smem_bytes>>>(
+        (const bf16*)Q.data_ptr(), (const bf16*)K.data_ptr(),
+        (const bf16*)V.data_ptr(), (bf16*)O.data_ptr(), N, scale);
+}
+
+// Report [regs, smem_dyn_bytes, maxActiveBlocksPerSM, sm_clock_kHz, achieved_occupancy].
+torch::Tensor kernel_attrs(){
+    cudaFuncAttributes a; cudaFuncGetAttributes(&a, fa3_sm80_h3_kernel);
+    int kv = 2*STAGES*BN*SD, qsz = BM*SD;
+    int smem_bytes = (kv > qsz ? kv : qsz) * sizeof(bf16);
+    cudaFuncSetAttribute(fa3_sm80_h3_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_bytes);
+    int maxblocks=0;
+    cudaOccupancyMaxActiveBlocksPerMultiprocessor(&maxblocks, fa3_sm80_h3_kernel, NTHREADS, smem_bytes);
+    int clk=0; cudaDeviceGetAttribute(&clk, cudaDevAttrClockRate, 0);       // kHz
+    int maxwarps=0; cudaDeviceGetAttribute(&maxwarps, cudaDevAttrMaxThreadsPerMultiProcessor, 0);
+    double occ = (double)(maxblocks*NTHREADS)/(double)maxwarps;
+    auto t = torch::empty({6}, torch::kFloat64);
+    t[0]=(double)a.numRegs; t[1]=(double)smem_bytes; t[2]=(double)maxblocks;
+    t[3]=(double)clk; t[4]=occ; t[5]=(double)NTHREADS;
+    return t;
+}
+
+torch::Tensor pp_attrs(){
+    cudaFuncAttributes a; cudaFuncGetAttributes(&a, fa3_pp_kernel);
+    int kv=2*STAGES*BN*SD, qsz=BM*SD; int smem_bytes=(kv>qsz?kv:qsz)*sizeof(bf16);
+    cudaFuncSetAttribute(fa3_pp_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_bytes);
+    int maxblocks=0; cudaOccupancyMaxActiveBlocksPerMultiprocessor(&maxblocks, fa3_pp_kernel, NTHREADS, smem_bytes);
+    int clk=0; cudaDeviceGetAttribute(&clk, cudaDevAttrClockRate, 0);
+    int maxw=0; cudaDeviceGetAttribute(&maxw, cudaDevAttrMaxThreadsPerMultiProcessor, 0);
+    auto t=torch::empty({6},torch::kFloat64);
+    t[0]=(double)a.numRegs; t[1]=(double)smem_bytes; t[2]=(double)maxblocks;
+    t[3]=(double)clk; t[4]=(double)(maxblocks*NTHREADS)/(double)maxw; t[5]=(double)NTHREADS;
+    return t;
 }
 
 // ---------- micro-test kernels (validate fragment plumbing) ----------
@@ -390,8 +583,11 @@ void reset_prof(){
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m){
     m.def("fa3", &fa3_sm80_h3_launch, "FA3_SM80_H3");
+    m.def("fa3_pp", &fa3_pp_launch, "FA3_SM80_H3 pipelined v2");
     m.def("get_prof", &get_prof, "phase cycles");
     m.def("reset_prof", &reset_prof, "reset");
+    m.def("kernel_attrs", &kernel_attrs, "regs/smem/occupancy/clock");
+    m.def("pp_attrs", &pp_attrs, "v2 regs/smem/occupancy/clock");
     m.def("test_qk", &test_qk_launch, "test qk");
     m.def("test_pv", &test_pv_launch, "test pv");
 }
