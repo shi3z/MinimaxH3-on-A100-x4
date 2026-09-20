@@ -1,0 +1,20 @@
+{
+ "tag": "cold",
+ "world": 4,
+ "seed": 215100,
+ "rank0_encode": false,
+ "wall_s": 218.24,
+ "peak_mem_gb": 46.9,
+ "dit_calls": 6,
+ "dit_ms_median": 12892.7,
+ "stage_ms": {
+  "request_parse": 0.5,
+  "model_load": 36895.4,
+  "ref_vae_encode": 2776.2,
+  "text_encode": 22143.3,
+  "dit_sp": 77464.0,
+  "vae_decode": 26492.3,
+  "mux_save_overhead": 52469.7
+ },
+ "mp4": "/mnt/ssdraid/project/comfy-h3/output/spgen/svc_cold_r0_00001_.mp4"
+}

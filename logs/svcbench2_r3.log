@@ -1,0 +1,29 @@
+[34mMinimax Hybrid Loader: [92mloaded[0m!
+
+[step_timer] ProgressBar wrapper installed
+[rank3]:[W920 01:39:15.837338192 ProcessGroupNCCL.cpp:5276] Guessing device ID based on global rank. This can cause a hang if rank to GPU mapping is heterogeneous. You can specify device_id in init_process_group()
+[MiniMaxH3TurboLoRA] pruned base [bypass]: lora=minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors strength=1.0 | 416 backbone modules, 0 bypass adapters, 0 injections | model=MiniMaxH3 weight_dtype=torch.bfloat16 weight_dev=cpu
+[H3TURBO sampler] legacy dual-schedule (no native ModelSamplingAV)  sigmas=[1.0, 0.9837, 0.9601, 0.9231, 0.8575, 0.7064, 0.0]  x.shape=(1, 1, 5379072) dtype=torch.float32  v_numel=5356800 a_numel=22272  shapes=[torch.Size([1, 24, 62, 45, 80]), torch.Size([1, 32, 2, 348])]
+  0%|          | 0/6 [00:00<?, ?it/s][H3TURBO fwd pruned/bypass] call#1  qkv_proj.forward_owner=Linear (BypassForwardHook => lora ACTIVE; else => BASE ONLY!)  is_injected=False  timestep=1000.00  video_rms=1.0001 audio_rms=1.0009 dtype=torch.bfloat16
+[H3TURBO step 0] sv=1.0000->0.9837  denoised_rms=1.8831  video: x_rms=0.9847 v_rms=2.1107  audio: x_rms=0.9407 v_rms=4.2281 slope=4.0000
+ 17%|█▋        | 1/6 [00:13<01:08, 13.71s/it][H3TURBO fwd pruned/bypass] call#2  qkv_proj.forward_owner=Linear (BypassForwardHook => lora ACTIVE; else => BASE ONLY!)  is_injected=False  timestep=983.68  video_rms=0.9847 audio_rms=0.9407 dtype=torch.bfloat16
+[H3TURBO step 1] sv=0.9837->0.9601  denoised_rms=1.2294  video: x_rms=0.9625 v_rms=1.5624  audio: x_rms=0.8642 v_rms=4.0049 slope=3.6354
+ 33%|███▎      | 2/6 [00:27<00:54, 13.70s/it][H3TURBO fwd pruned/bypass] call#3  qkv_proj.forward_owner=Linear (BypassForwardHook => lora ACTIVE; else => BASE ONLY!)  is_injected=False  timestep=960.06  video_rms=0.9625 audio_rms=0.8642 dtype=torch.bfloat16
+[H3TURBO step 2] sv=0.9601->0.9231  denoised_rms=1.0622  video: x_rms=0.9293 v_rms=1.4255  audio: x_rms=0.7697 v_rms=3.8213 slope=3.1898
+ 50%|█████     | 3/6 [00:41<00:41, 13.71s/it][H3TURBO fwd pruned/bypass] call#4  qkv_proj.forward_owner=Linear (BypassForwardHook => lora ACTIVE; else => BASE ONLY!)  is_injected=False  timestep=923.08  video_rms=0.9293 audio_rms=0.7697 dtype=torch.bfloat16
+[H3TURBO step 3] sv=0.9231->0.8575  denoised_rms=1.0421  video: x_rms=0.8749 v_rms=1.4112  audio: x_rms=0.6599 v_rms=3.4479 slope=2.6406
+ 67%|██████▋   | 4/6 [00:54<00:27, 13.74s/it][H3TURBO fwd pruned/bypass] call#5  qkv_proj.forward_owner=Linear (BypassForwardHook => lora ACTIVE; else => BASE ONLY!)  is_injected=False  timestep=857.51  video_rms=0.8749 audio_rms=0.6598 dtype=torch.bfloat16
+[H3TURBO step 4] sv=0.8575->0.7064  denoised_rms=1.0205  video: x_rms=0.7780 v_rms=1.3947  audio: x_rms=0.5487 v_rms=2.2548 slope=1.9630
+ 83%|████████▎ | 5/6 [01:08<00:13, 13.77s/it][H3TURBO fwd pruned/bypass] call#6  qkv_proj.forward_owner=Linear (BypassForwardHook => lora ACTIVE; else => BASE ONLY!)  is_injected=False  timestep=706.38  video_rms=0.7780 audio_rms=0.5487 dtype=torch.bfloat16
+[H3TURBO step 5] sv=0.7064->0.0000  denoised_rms=1.0263  video: x_rms=1.0270 v_rms=1.3908  audio: x_rms=0.5700 v_rms=1.1486 slope=1.1307
+[step_timer] steps(s): [13.7, 13.724, 13.77, 13.82, 13.863] total=68.878s
+100%|██████████| 6/6 [01:22<00:00, 13.80s/it]100%|██████████| 6/6 [01:22<00:00, 13.76s/it]
+[H3TURBO sampler] legacy dual-schedule (no native ModelSamplingAV)  sigmas=[1.0, 0.9837, 0.9601, 0.9231, 0.8575, 0.7064, 0.0]  x.shape=(1, 1, 5379072) dtype=torch.float32  v_numel=5356800 a_numel=22272  shapes=[torch.Size([1, 24, 62, 45, 80]), torch.Size([1, 32, 2, 348])]
+  0%|          | 0/6 [00:00<?, ?it/s][H3TURBO step 0] sv=1.0000->0.9837  denoised_rms=1.9718  video: x_rms=0.9843 v_rms=2.1922  audio: x_rms=0.9358 v_rms=4.1975 slope=4.0000
+ 17%|█▋        | 1/6 [00:13<01:08, 13.75s/it][H3TURBO step 1] sv=0.9837->0.9601  denoised_rms=1.2170  video: x_rms=0.9621 v_rms=1.5541  audio: x_rms=0.8591 v_rms=3.8943 slope=3.6354
+ 33%|███▎      | 2/6 [00:27<00:55, 13.76s/it][H3TURBO step 2] sv=0.9601->0.9231  denoised_rms=1.0799  video: x_rms=0.9289 v_rms=1.4407  audio: x_rms=0.7633 v_rms=3.6775 slope=3.1898
+ 50%|█████     | 3/6 [00:41<00:41, 13.79s/it][H3TURBO step 3] sv=0.9231->0.8575  denoised_rms=1.0362  video: x_rms=0.8746 v_rms=1.4060  audio: x_rms=0.6486 v_rms=3.3565 slope=2.6406
+ 67%|██████▋   | 4/6 [00:55<00:27, 13.80s/it][H3TURBO step 4] sv=0.8575->0.7064  denoised_rms=1.0187  video: x_rms=0.7779 v_rms=1.3914  audio: x_rms=0.5364 v_rms=2.2938 slope=1.9630
+ 83%|████████▎ | 5/6 [01:09<00:13, 13.83s/it][H3TURBO step 5] sv=0.7064->0.0000  denoised_rms=1.0254  video: x_rms=1.0261 v_rms=1.3881  audio: x_rms=0.5563 v_rms=1.1361 slope=1.1307
+[step_timer] steps(s): [13.758, 13.837, 13.823, 13.874, 13.921] total=69.213s
+100%|██████████| 6/6 [01:22<00:00, 13.86s/it]100%|██████████| 6/6 [01:22<00:00, 13.83s/it]

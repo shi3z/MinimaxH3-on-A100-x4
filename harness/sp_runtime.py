@@ -17,6 +17,17 @@ RANK = int(os.environ.get("RANK", "0"))
 WORLD = int(os.environ.get("WORLD_SIZE", "1"))
 _INIT = False
 
+# SP attention is scoped to the DiT block loop ONLY. The same Attention class is also
+# used by the TokenRefiner (full, replicated sequence, outside run_blocks) — running
+# Ulysses there would all-to-all an unsharded tensor and corrupt conditioning. run_blocks
+# sets _SP_ACTIVE while the sharded block loop runs; the patched attention falls back to
+# the original math otherwise. _SP_REAL_S is the true (unpadded) sequence length: after the
+# Ulysses gather each rank holds S_pad keys; slicing K,V to the real length drops the pad
+# tail so real-token queries attend over exactly the real keys (bit-exact, no attn mask).
+_SP_ACTIVE = False
+_SP_REAL_S = None
+_orig_attn_forward = None
+
 # ---- optional per-op timing (SP_TIMING=1): CUDA-event category accumulators, summed per run_blocks ----
 _TIMING = os.environ.get("SP_TIMING") == "1"
 _acc = {}          # category -> list of (start_evt, end_evt)
@@ -66,6 +77,8 @@ def a2a_head_to_seq(x, world, H):     # [1,Hl,S,d] -> [1,H,Sl,d]
     return y.reshape(1, H, Sl, d).contiguous()
 
 def _sp_attn_forward(self, x, rope_freqs=None, transformer_options={}):
+    if not _SP_ACTIVE:
+        return _orig_attn_forward(self, x, rope_freqs=rope_freqs, transformer_options=transformer_options)
     import comfy.model_management, comfy.quant_ops
     s = x.shape[0]
     with _tr("qkv"):
@@ -84,6 +97,10 @@ def _sp_attn_forward(self, x, rope_freqs=None, transformer_options={}):
     with _tr("a2a_fwd"):
         qh = a2a_seq_to_head(q, WORLD); kh = a2a_seq_to_head(k, WORLD); vh = a2a_seq_to_head(v, WORLD)
     with _tr("fa2_local"):
+        # drop the padded key/value tail so real-token queries attend over exactly the real
+        # keys (unequal-length flash: q=S_pad, k/v=S_real -> real-query rows bit-exact).
+        if _SP_REAL_S is not None and _SP_REAL_S < kh.shape[2]:
+            kh = kh[:, :, :_SP_REAL_S, :]; vh = vh[:, :, :_SP_REAL_S, :]
         with sdpa_kernel([SDPBackend.FLASH_ATTENTION]):
             oh = torch.nn.functional.scaled_dot_product_attention(qh, kh, vh)
     with _tr("a2a_inv"):
@@ -111,6 +128,8 @@ def _piece_bounds(n, p):
     return out
 
 def _sp_attn_forward_overlap(self, x, rope_freqs=None, transformer_options={}):
+    if not _SP_ACTIVE:
+        return _orig_attn_forward(self, x, rope_freqs=rope_freqs, transformer_options=transformer_options)
     import comfy.model_management, comfy.quant_ops
     global _comm_stream
     if _comm_stream is None:
@@ -130,6 +149,8 @@ def _sp_attn_forward_overlap(self, x, rope_freqs=None, transformer_options={}):
     q = q.transpose(0, 1).unsqueeze(0); k = k.transpose(0, 1).unsqueeze(0); v = v.transpose(0, 1).unsqueeze(0)
     # gather full K,V (blocking) — required before any attention
     kh = a2a_seq_to_head(k, WORLD); vh = a2a_seq_to_head(v, WORLD)
+    if _SP_REAL_S is not None and _SP_REAL_S < kh.shape[2]:
+        kh = kh[:, :, :_SP_REAL_S, :]; vh = vh[:, :, :_SP_REAL_S, :]
     Hl = self.heads // WORLD
     pieces = _piece_bounds(s, _PIECES)
     default = torch.cuda.current_stream()
@@ -179,34 +200,50 @@ def _sp_block_timed(self, x, t_emb, mod_segments, rope_freqs, transformer_option
         return MM._mod_gate(x, gate_mlp, m, mod_segments)
 
 def _sp_run_blocks(self, h, t_emb, mod_segments, rope_freqs, transformer_options={}):
+    global _SP_ACTIVE, _SP_REAL_S
     if WORLD == 1:
         return _orig_run_blocks(self, h, t_emb, mod_segments, rope_freqs, transformer_options)
     S = h.shape[0]
-    if S % WORLD != 0:
-        raise NotImplementedError(f"S={S} not divisible by WORLD={WORLD} (uneven-shard TODO)")
-    Sl = S // WORLD; lo, hi = RANK * Sl, (RANK + 1) * Sl
+    # EXACT uneven-S padding: pad the packed sequence up to a multiple of WORLD. Pad rows are
+    # appended at the tail (outside every mod segment, so scale/shift/gate skip them), sharded
+    # like real rows, run through the 50 blocks, then dropped after the all-gather. Their KEY
+    # positions are excluded inside attention (via _SP_REAL_S) so real tokens never see pad.
+    S_pad = ((S + WORLD - 1) // WORLD) * WORLD
+    P = S_pad - S
+    if P > 0:
+        h = torch.cat([h, h.new_zeros(P, h.shape[1])], dim=0)
+        if rope_freqs is not None:
+            pad_shape = (rope_freqs.shape[0], P) + tuple(rope_freqs.shape[2:])
+            rope_freqs = torch.cat([rope_freqs, rope_freqs.new_zeros(pad_shape)], dim=1)
+    Sl = S_pad // WORLD; lo, hi = RANK * Sl, (RANK + 1) * Sl
     h_loc = h[lo:hi].contiguous()
     rope_loc = rope_freqs[:, lo:hi].contiguous() if rope_freqs is not None else None
-    segs_loc = _shard_segments(mod_segments, lo, hi)
+    segs_loc = _shard_segments(mod_segments, lo, hi)   # pad rows (>= S) fall in no segment
     blkfn = _sp_block_timed if _TIMING else None
-    for blk in self.blocks:
-        if blkfn is not None:
-            h_loc = blkfn(blk, h_loc, t_emb, segs_loc, rope_loc, transformer_options=transformer_options)
-        else:
-            h_loc = blk(h_loc, t_emb, segs_loc, rope_loc, transformer_options=transformer_options)
-    with _tr("gather"):
-        gathered = [torch.empty_like(h_loc) for _ in range(WORLD)]
-        dist.all_gather(gathered, h_loc.contiguous())
-        out = torch.cat(gathered, dim=0)
+    _SP_ACTIVE = True; _SP_REAL_S = S
+    try:
+        for blk in self.blocks:
+            if blkfn is not None:
+                h_loc = blkfn(blk, h_loc, t_emb, segs_loc, rope_loc, transformer_options=transformer_options)
+            else:
+                h_loc = blk(h_loc, t_emb, segs_loc, rope_loc, transformer_options=transformer_options)
+        with _tr("gather"):
+            gathered = [torch.empty_like(h_loc) for _ in range(WORLD)]
+            dist.all_gather(gathered, h_loc.contiguous())
+            out = torch.cat(gathered, dim=0)
+    finally:
+        _SP_ACTIVE = False; _SP_REAL_S = None
     _finalize_timing()
-    return out
+    return out[:S] if P > 0 else out
 
 _orig_run_blocks = None
 def install():
-    global _orig_run_blocks
+    global _orig_run_blocks, _orig_attn_forward
     import comfy.ldm.minimax.model as MM
     if _orig_run_blocks is None:
         _orig_run_blocks = MM.MiniMaxH3Model.run_blocks
+    if _orig_attn_forward is None:
+        _orig_attn_forward = MM.Attention.forward
     overlap = os.environ.get("SP_OVERLAP") == "1"
     MM.Attention.forward = _sp_attn_forward_overlap if overlap else _sp_attn_forward
     MM.MiniMaxH3Model.run_blocks = _sp_run_blocks

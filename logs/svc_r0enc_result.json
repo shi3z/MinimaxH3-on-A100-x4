@@ -1,0 +1,20 @@
+{
+ "tag": "r0enc",
+ "world": 4,
+ "seed": 215100,
+ "rank0_encode": true,
+ "wall_s": 219.31,
+ "peak_mem_gb": 46.9,
+ "dit_calls": 6,
+ "dit_ms_median": 12832.5,
+ "stage_ms": {
+  "request_parse": 0.8,
+  "model_load": 38878.0,
+  "ref_vae_encode": 3438.1,
+  "text_encode": 21168.7,
+  "dit_sp": 78266.1,
+  "vae_decode": 26665.4,
+  "mux_save_overhead": 50890.3
+ },
+ "mp4": "/mnt/ssdraid/project/comfy-h3/output/spgen/svc_r0enc_r0_00001_.mp4"
+}

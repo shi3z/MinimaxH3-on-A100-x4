@@ -1,0 +1,35 @@
+[34mMinimax Hybrid Loader: [92mloaded[0m!
+
+[step_timer] ProgressBar wrapper installed
+[sp_runtime] installed (WORLD=1) — run_blocks + Ulysses attention patched [blocking]
+[MiniMaxH3TurboLoRA] pruned base [bypass]: lora=minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors strength=1.0 | 416 backbone modules, 0 bypass adapters, 0 injections | model=MiniMaxH3 weight_dtype=torch.bfloat16 weight_dev=cpu
+[H3TURBO sampler] legacy dual-schedule (no native ModelSamplingAV)  sigmas=[1.0, 0.9837, 0.9601, 0.9231, 0.8575, 0.7064, 0.0]  x.shape=(1, 1, 5379072) dtype=torch.float32  v_numel=5356800 a_numel=22272  shapes=[torch.Size([1, 24, 62, 45, 80]), torch.Size([1, 32, 2, 348])]
+  0%|          | 0/6 [00:00<?, ?it/s][H3TURBO fwd pruned/bypass] call#1  qkv_proj.forward_owner=Linear (BypassForwardHook => lora ACTIVE; else => BASE ONLY!)  is_injected=False  timestep=1000.00  video_rms=1.0001 audio_rms=1.0009 dtype=torch.bfloat16
+[spgen] packed seq S=66800  S%1=0  (pad->66800)
+[H3TURBO step 0] sv=1.0000->0.9837  denoised_rms=1.8831  video: x_rms=0.9847 v_rms=2.1107  audio: x_rms=0.9407 v_rms=4.2281 slope=4.0000
+ 17%|█▋        | 1/6 [00:43<03:39, 43.94s/it][H3TURBO fwd pruned/bypass] call#2  qkv_proj.forward_owner=Linear (BypassForwardHook => lora ACTIVE; else => BASE ONLY!)  is_injected=False  timestep=983.68  video_rms=0.9847 audio_rms=0.9407 dtype=torch.bfloat16
+[H3TURBO step 1] sv=0.9837->0.9601  denoised_rms=1.2294  video: x_rms=0.9625 v_rms=1.5624  audio: x_rms=0.8642 v_rms=4.0049 slope=3.6354
+ 33%|███▎      | 2/6 [01:28<02:56, 44.06s/it][H3TURBO fwd pruned/bypass] call#3  qkv_proj.forward_owner=Linear (BypassForwardHook => lora ACTIVE; else => BASE ONLY!)  is_injected=False  timestep=960.06  video_rms=0.9625 audio_rms=0.8642 dtype=torch.bfloat16
+[H3TURBO step 2] sv=0.9601->0.9231  denoised_rms=1.0622  video: x_rms=0.9293 v_rms=1.4255  audio: x_rms=0.7697 v_rms=3.8213 slope=3.1898
+ 50%|█████     | 3/6 [02:12<02:12, 44.16s/it][H3TURBO fwd pruned/bypass] call#4  qkv_proj.forward_owner=Linear (BypassForwardHook => lora ACTIVE; else => BASE ONLY!)  is_injected=False  timestep=923.08  video_rms=0.9293 audio_rms=0.7697 dtype=torch.bfloat16
+[H3TURBO step 3] sv=0.9231->0.8575  denoised_rms=1.0421  video: x_rms=0.8749 v_rms=1.4112  audio: x_rms=0.6599 v_rms=3.4479 slope=2.6406
+ 67%|██████▋   | 4/6 [02:56<01:28, 44.24s/it][H3TURBO fwd pruned/bypass] call#5  qkv_proj.forward_owner=Linear (BypassForwardHook => lora ACTIVE; else => BASE ONLY!)  is_injected=False  timestep=857.51  video_rms=0.8749 audio_rms=0.6598 dtype=torch.bfloat16
+[H3TURBO step 4] sv=0.8575->0.7064  denoised_rms=1.0205  video: x_rms=0.7780 v_rms=1.3947  audio: x_rms=0.5487 v_rms=2.2548 slope=1.9630
+ 83%|████████▎ | 5/6 [03:41<00:44, 44.26s/it][H3TURBO fwd pruned/bypass] call#6  qkv_proj.forward_owner=Linear (BypassForwardHook => lora ACTIVE; else => BASE ONLY!)  is_injected=False  timestep=706.38  video_rms=0.7780 audio_rms=0.5487 dtype=torch.bfloat16
+[H3TURBO step 5] sv=0.7064->0.0000  denoised_rms=1.0263  video: x_rms=1.0270 v_rms=1.3908  audio: x_rms=0.5700 v_rms=1.1486 slope=1.1307
+[step_timer] steps(s): [44.141, 44.288, 44.348, 44.307, 44.267] total=221.352s
+100%|██████████| 6/6 [04:25<00:00, 44.26s/it]100%|██████████| 6/6 [04:25<00:00, 44.22s/it]
+[spgen] latent capture failed: 'NestedTensor' object has no attribute 'detach'
+[spgen] === RESULT ===
+[spgen]   tag: gpu1
+[spgen]   world: 1
+[spgen]   seed: 215100
+[spgen]   num_frames: 209
+[spgen]   wall_s: 361.1
+[spgen]   run_blocks_calls: 6
+[spgen]   run_blocks_ms_median: 44257.6
+[spgen]   vae_decode_ms: 26222.1
+[spgen]   peak_mem_gb: 50.67
+[spgen]   mp4: /mnt/ssdraid/project/comfy-h3/output/spgen/gpu1_r0_00001_.mp4
+[spgen]   latent_pt: /mnt/ssdraid/project/h3-opt/logs/spgen_gpu1_latent.pt
+[spgen]   run_blocks_ms_each: [43884.5, 44110.4, 44257.6, 44317.8, 44276.5, 44238.9]

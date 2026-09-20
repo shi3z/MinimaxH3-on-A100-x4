@@ -1,0 +1,15 @@
+{
+ "tag": "warmrepeat",
+ "world": 4,
+ "seed": 215100,
+ "rank0_encode": false,
+ "wall_s": 40.31,
+ "peak_mem_gb": 42.58,
+ "dit_calls": 0,
+ "dit_ms_median": 0,
+ "stage_ms": {
+  "request_parse": 0.6,
+  "mux_save_overhead": 40310.8
+ },
+ "mp4": "/mnt/ssdraid/project/comfy-h3/output/spgen/svc_warmrepeat_r0_00001_.mp4"
+}

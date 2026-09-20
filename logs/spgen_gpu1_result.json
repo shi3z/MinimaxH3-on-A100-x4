@@ -1,0 +1,21 @@
+{
+ "tag": "gpu1",
+ "world": 1,
+ "seed": 215100,
+ "num_frames": 209,
+ "wall_s": 361.1,
+ "run_blocks_calls": 6,
+ "run_blocks_ms_each": [
+  43884.5,
+  44110.4,
+  44257.6,
+  44317.8,
+  44276.5,
+  44238.9
+ ],
+ "run_blocks_ms_median": 44257.6,
+ "vae_decode_ms": 26222.1,
+ "peak_mem_gb": 50.67,
+ "mp4": "/mnt/ssdraid/project/comfy-h3/output/spgen/gpu1_r0_00001_.mp4",
+ "latent_pt": "/mnt/ssdraid/project/h3-opt/logs/spgen_gpu1_latent.pt"
+}

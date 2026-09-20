@@ -1,0 +1,7 @@
+[sp_runtime] installed (WORLD=4) — run_blocks + Ulysses attention patched [blocking]
+[pad-test] S=40867 S%4=3 pad->40868 (P=1)  real-token max_err=0.000e+00 mean=0.000e+00  ref_absmax=16908288.000
+/mnt/ssdraid/project/comfy-h3/.venv-exp/lib/python3.10/site-packages/torch/distributed/c10d_logger.py:83: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  return func(*args, **kwargs)
+[pad-test] S=40866 S%4=2 pad->40868 (P=2)  real-token max_err=0.000e+00 mean=0.000e+00  ref_absmax=17039360.000
+[pad-test] S=40865 S%4=1 pad->40868 (P=3)  real-token max_err=0.000e+00 mean=0.000e+00  ref_absmax=17039360.000
+[pad-test] S=40868 S%4=0 pad->40868 (P=0)  real-token max_err=0.000e+00 mean=0.000e+00  ref_absmax=16908288.000

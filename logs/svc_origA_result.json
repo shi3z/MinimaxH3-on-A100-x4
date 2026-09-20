@@ -1,0 +1,18 @@
+{
+ "tag": "origA",
+ "world": 4,
+ "seed": 215100,
+ "rank0_encode": false,
+ "wall_s": 145.86,
+ "peak_mem_gb": 46.9,
+ "dit_calls": 6,
+ "dit_ms_median": 12906.1,
+ "stage_ms": {
+  "request_parse": 0.8,
+  "dit_sp": 77387.5,
+  "vae_decode": 26682.5,
+  "mux_save": 35695.3,
+  "other_sync": 6096.1
+ },
+ "mp4": "/mnt/ssdraid/project/comfy-h3/output/spgen/svc_origA_r0_00001_.mp4"
+}

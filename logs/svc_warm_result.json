@@ -1,0 +1,17 @@
+{
+ "tag": "warm",
+ "world": 4,
+ "seed": 999001,
+ "rank0_encode": false,
+ "wall_s": 150.77,
+ "peak_mem_gb": 46.9,
+ "dit_calls": 6,
+ "dit_ms_median": 12931.6,
+ "stage_ms": {
+  "request_parse": 0.4,
+  "dit_sp": 77457.1,
+  "vae_decode": 26598.4,
+  "mux_save_overhead": 46712.0
+ },
+ "mp4": "/mnt/ssdraid/project/comfy-h3/output/spgen/svc_warm_r0_00001_.mp4"
+}

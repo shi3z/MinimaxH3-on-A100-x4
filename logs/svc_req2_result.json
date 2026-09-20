@@ -1,0 +1,17 @@
+{
+ "tag": "req2",
+ "world": 4,
+ "seed": 700002,
+ "rank0_encode": false,
+ "wall_s": 151.18,
+ "peak_mem_gb": 46.9,
+ "dit_calls": 6,
+ "dit_ms_median": 12963.9,
+ "stage_ms": {
+  "request_parse": 0.4,
+  "dit_sp": 77619.0,
+  "vae_decode": 26855.0,
+  "mux_save_overhead": 46709.3
+ },
+ "mp4": "/mnt/ssdraid/project/comfy-h3/output/spgen/svc_req2_r0_00001_.mp4"
+}

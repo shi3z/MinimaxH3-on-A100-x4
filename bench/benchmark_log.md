@@ -216,3 +216,28 @@ Attention >50% → prioritize attention. Single-GPU exact maxed → implement **
 
 ## Correctness log (max/mean error vs baseline)
 (pending)
+
+## Persistent 4-rank H3 service + streaming save — full-gen 361->121s (2026-09-20)
+Turned the one-shot SP path into a persistent 4-rank service (harness/sp_service.py, run_sp_service.sh):
+models/LoRA/VAE/text-encoder + NCCL + sp_runtime loaded ONCE (startup ~47.6s, excluded), then serves
+many requests. SP DiT path unchanged.
+
+Streaming save: the "~40s mux" was NOT the codec (libx264 re-encodes 209x720p in ~2.7s) — it was
+PyAV per-frame marshalling (VideoFrame.from_ndarray 5.7s + reformat 1.9s + encode 4.5s) x4 ranks
+running save_to concurrently = 35.7s. Replaced with frames -> contiguous CPU rgb24 -> single ffmpeg
+stdin (rawvideo -> libx264 veryfast crf16), audio raw PCM -> AAC. mux_save 35.7s -> 6.5s.
+Correctness: pre-compression frame hash IDENTICAL to the PyAV path (zero pixels changed); NVENC is
+impossible on A100 (no encoder hardware) and was unnecessary.
+
+Full-generation wall clock (cut2151, S=66800, 6-step turbo, GPU4-7):
+| variant | full-gen s |
+|---|---|
+| 1-GPU standalone | 361.1 |
+| old 4-GPU one-shot | 222.5 |
+| persistent 4-GPU (orig save) steady | 151.3 |
+| persistent 4-GPU + streaming save, first warm req | 118.3 |
+| **persistent 4-GPU + streaming save, steady-state** | **121.2** (~3.0x vs 1-GPU) |
+
+New steady critical path: DiT(SP) 81.7s (67%) · VAE decode 27.0s (22%, NEXT bottleneck) ·
+mux_save 6.5s (5%) · sync 6.4s (5%) · text/ref encode cached (~26s fresh cut). Bit-identical to 1-GPU.
+Next lever: VAE decode (27s, GPU-bound — temporal tiling / fp16).

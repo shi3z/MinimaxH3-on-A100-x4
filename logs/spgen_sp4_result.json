@@ -1,0 +1,21 @@
+{
+ "tag": "sp4",
+ "world": 4,
+ "seed": 215100,
+ "num_frames": 209,
+ "wall_s": 222.52,
+ "run_blocks_calls": 6,
+ "run_blocks_ms_each": [
+  13691.6,
+  12755.2,
+  12829.4,
+  12851.7,
+  12916.0,
+  12912.5
+ ],
+ "run_blocks_ms_median": 12851.7,
+ "vae_decode_ms": 26384.7,
+ "peak_mem_gb": 46.9,
+ "mp4": "/mnt/ssdraid/project/comfy-h3/output/spgen/sp4_r0_00001_.mp4",
+ "latent_pt": "/mnt/ssdraid/project/h3-opt/logs/spgen_sp4_latent.pt"
+}

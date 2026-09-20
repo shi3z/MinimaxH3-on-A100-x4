@@ -152,5 +152,47 @@
     "seq_len": 40868,
     "dtype": "bf16",
     "occupancy": null
+  },
+  {
+    "kernel": "Ulysses-SP full-gen cut2151 (4xA100 GPU4-7)",
+    "latency_ms": 12851.7,
+    "vs_fa2": null,
+    "config": "WORLD=4, S=66800, 6-step turbo, 1280x720x209f",
+    "note": "in-process SPMD ComfyUI; decoded frames+audio BIT-IDENTICAL vs 1-GPU; uneven-S pad bit-exact",
+    "ts": 1789867145.5781636,
+    "step_ms": 12851.7,
+    "total_gen_ms": 222520,
+    "correctness": "bit-identical (md5 match)",
+    "effective_gpus": 4,
+    "seq_len": 66800,
+    "dtype": "bf16/int8"
+  },
+  {
+    "kernel": "Ulysses-SP persistent service cut2151 (4xA100 GPU4-7)",
+    "latency_ms": 12936.4,
+    "vs_fa2": null,
+    "config": "persistent SPMD, WORLD=4, 6-step turbo 1280x720x209f, startup 47.6s excluded",
+    "note": "steady-state warm 151.3s (median req2/req3); first-req warm-model 180s; old one-shot 222.5s; 1-GPU 361.1s; steady output frame+audio BIT-IDENTICAL to 1-GPU; DiT=51% vae_decode=18% video-encode/overhead=31%",
+    "ts": 1789869990.197301,
+    "step_ms": 12936.4,
+    "total_gen_ms": 151300,
+    "correctness": "bit-identical (md5)",
+    "effective_gpus": 4,
+    "seq_len": 66800,
+    "dtype": "bf16/int8"
+  },
+  {
+    "kernel": "Ulysses-SP persistent+streaming-save cut2151 (4xA100 GPU4-7)",
+    "latency_ms": 13223.3,
+    "vs_fa2": null,
+    "config": "persistent SPMD WORLD=4, 6-step turbo 1280x720x209f, ffmpeg rawvideo-stdin save",
+    "note": "steady 121.2s (was 151.3 persistent, 222.5 one-shot, 361.1 1-GPU); mux_save 35.7s->6.5s (streaming ffmpeg, killed per-frame PyAV marshalling+4x contention); pre-compression frames BIT-IDENTICAL; vae_decode 27s now next bottleneck",
+    "ts": 1789872683.3380194,
+    "step_ms": 13223.3,
+    "total_gen_ms": 121240,
+    "correctness": "frames bit-identical (md5)",
+    "effective_gpus": 4,
+    "seq_len": 66800,
+    "dtype": "bf16/int8"
   }
 ]
