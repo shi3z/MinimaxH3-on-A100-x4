@@ -19,8 +19,20 @@ sys.path.insert(0, "/mnt/ssdraid/project/h3-opt/harness")
 sys.path.insert(0, "/mnt/ssdraid/project/comfy-h3")
 sys.path.insert(0, "/mnt/ssdraid/project/h3-fleet")
 
-JOB_PATH = sys.argv[1]
-TAG = sys.argv[2] if len(sys.argv) > 2 else "gen"
+# optional flags (anywhere): --sla-preset {off,quality,balanced,speed,custom}  --sla-layer-keep "25:31-42,46-49"
+#   (per-layer schedules are defined once in comfy-h3/custom_nodes/h3_sla PRESETS; absent = job file unchanged)
+_FLAGS = {}
+_argv = []
+_it = iter(sys.argv[1:])
+for _a in _it:
+    if _a in ("--sla-preset", "--sla-layer-keep"):
+        _FLAGS[_a] = next(_it)
+    elif _a.startswith("--sla-preset=") or _a.startswith("--sla-layer-keep="):
+        _k, _v = _a.split("=", 1); _FLAGS[_k] = _v
+    else:
+        _argv.append(_a)
+JOB_PATH = _argv[0]
+TAG = _argv[1] if len(_argv) > 1 else "gen"
 LOG = "/mnt/ssdraid/project/h3-opt/logs"
 COMFY_OUT = "/mnt/ssdraid/project/comfy-h3/output"
 
@@ -81,6 +93,13 @@ nodes.VAEDecode.decode = _cap_vaedecode
 # ---- build the graph -----------------------------------------------------------
 from comfy_worker import build_graph, WID
 job = json.load(open(JOB_PATH))
+if "--sla-preset" in _FLAGS:
+    job["sla_preset"] = _FLAGS["--sla-preset"]
+if "--sla-layer-keep" in _FLAGS:
+    job["sla_layer_keep"] = _FLAGS["--sla-layer-keep"]
+    job.setdefault("sla_preset", "custom")
+if job.get("sla_preset"):
+    log(f"SLA preset requested: {job['sla_preset']}" + (f" layer_keep={job.get('sla_layer_keep')}" if job.get("sla_layer_keep") else ""))
 g = build_graph(job)
 # per-rank save prefix so the 4 ranks never collide; rank 0 is the deliverable
 for nid, node in g.items():
@@ -125,6 +144,7 @@ if RANK == 0:
     med = statistics.median(body) if body else 0.0
     result = {
         "tag": TAG, "world": WORLD, "seed": job["seed"], "num_frames": job["num_frames"],
+        "sla_preset": job.get("sla_preset", "off"), "sla_layer_keep": job.get("sla_layer_keep"),
         "wall_s": round(dt, 2), "run_blocks_calls": len(steps),
         "run_blocks_ms_each": [round(x, 1) for x in steps],
         "run_blocks_ms_median": round(med, 1),

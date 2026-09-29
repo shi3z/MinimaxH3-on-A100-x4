@@ -76,6 +76,12 @@ def a2a_head_to_seq(x, world, H):     # [1,Hl,S,d] -> [1,H,Sl,d]
     y = torch.empty_like(xp); dist.all_to_all_single(y, xp)
     return y.reshape(1, H, Sl, d).contiguous()
 
+def _h3sla_schedule(transformer_options):
+    """Active per-layer SLA schedule set by the h3_sla node (preset != off), else None (plain FA2).
+    The schedule table itself lives only in custom_nodes/h3_sla (PRESETS)."""
+    ov = (transformer_options or {}).get("optimized_attention_override")
+    return getattr(ov, "h3sla", None)
+
 def _sp_attn_forward(self, x, rope_freqs=None, transformer_options={}):
     if not _SP_ACTIVE:
         return _orig_attn_forward(self, x, rope_freqs=rope_freqs, transformer_options=transformer_options)
@@ -101,8 +107,18 @@ def _sp_attn_forward(self, x, rope_freqs=None, transformer_options={}):
         # keys (unequal-length flash: q=S_pad, k/v=S_real -> real-query rows bit-exact).
         if _SP_REAL_S is not None and _SP_REAL_S < kh.shape[2]:
             kh = kh[:, :, :_SP_REAL_S, :]; vh = vh[:, :, :_SP_REAL_S, :]
-        with sdpa_kernel([SDPBackend.FLASH_ATTENTION]):
-            oh = torch.nn.functional.scaled_dot_product_attention(qh, kh, vh)
+        oh = None
+        sched = _h3sla_schedule(transformer_options) if rope_freqs is not None else None
+        if sched is not None:
+            # h3_sla per-layer preset (quality/balanced/speed/custom): SLA sparse branch on the local heads,
+            # real-length queries; pad-query rows are zero (they are dropped after the gather anyway).
+            S_real = kh.shape[2]
+            oh = sched.run(getattr(self, "_h3sla_layer", None), qh[:, :, :S_real], kh, vh, transformer_options)
+            if oh is not None and S_real < qh.shape[2]:
+                oh = torch.cat([oh, oh.new_zeros(1, oh.shape[1], qh.shape[2] - S_real, oh.shape[3])], 2)
+        if oh is None:
+            with sdpa_kernel([SDPBackend.FLASH_ATTENTION]):
+                oh = torch.nn.functional.scaled_dot_product_attention(qh, kh, vh)
     with _tr("a2a_inv"):
         o = a2a_head_to_seq(oh, WORLD, self.heads)
     with _tr("out_proj"):
@@ -128,6 +144,8 @@ def _piece_bounds(n, p):
     return out
 
 def _sp_attn_forward_overlap(self, x, rope_freqs=None, transformer_options={}):
+    if rope_freqs is not None and _h3sla_schedule(transformer_options) is not None:
+        return _sp_attn_forward(self, x, rope_freqs=rope_freqs, transformer_options=transformer_options)   # SLA preset: blocking path
     if not _SP_ACTIVE:
         return _orig_attn_forward(self, x, rope_freqs=rope_freqs, transformer_options=transformer_options)
     import comfy.model_management, comfy.quant_ops

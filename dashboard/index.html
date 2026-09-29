@@ -42,6 +42,8 @@ svg{display:block;width:100%}
 <div class="grid">
   <div class="p c12" id="warnbox" style="display:none"></div>
 
+  <div class="p c12"><h2>SLA preset (per-layer keep) <span class="dim">— h3_sla quality / balanced / speed; off = legacy uniform</span></h2><div id="slap" class="dim">no preset run reported yet</div></div>
+
   <div class="p c4"><h2>Top bottlenecks (this step)</h2><div id="bott"></div></div>
   <div class="p c4"><h2>Amdahl — max end-to-end gain</h2><div id="amdahl"></div></div>
   <div class="p c4"><h2>Current vs Previous vs Best</h2><div id="cmp"></div></div>
@@ -208,6 +210,25 @@ function render(d){
   const r=d.run;$("hdr").textContent=`${r.gen} · ${r.kernel} · seq ${r.seq_len} · ${r.dtype} · ${r.steps.length} steps`;
   breakdown(r);stepsTable(r);layers(r);layerOps(r);heat(r);bottleneck(d.bottleneck);amdahl(d.amdahl);
 }
+function slaPreset(){
+  fetch("/api/sla_preset").then(r=>r.json()).then(d=>{
+    const el=document.getElementById("slap"); if(!d.entries||!d.entries.length){el.innerHTML='<span class="dim">no preset run reported yet</span>';return;}
+    const col=k=>k>=1?"#e05a5a":k>=0.25?"#f5a623":k>=0.2?"#c8b43c":"#3fd08a";
+    el.innerHTML=d.entries.map(e=>{
+      const c=e.counts||{}, n15=c["15"]||0, n25=c["25"]||0, oth=Object.entries(c).filter(([k])=>k!=="15"&&k!=="25").map(([k,v])=>`SLA${k}=${v}`).join(" ");
+      const ms=e.attn_ms_per_layer_call;
+      const strip=(e.keeps||[]).map((k,i)=>`<i title="layer ${i}: keep ${Math.round(k*100)}%${ms&&ms[i]!=null?" · attn "+ms[i].toFixed(1)+" ms/call":""}" style="background:${col(k)};height:${ms&&ms[i]!=null?Math.max(6,Math.min(26,ms[i]/6)):14}px;align-self:end"></i>`).join("");
+      const ranges=Object.entries(e.layers_by_keep||{}).map(([k,r])=>`${k}: ${r}`).join(" · ");
+      return `<div style="margin:4px 0 10px;${e.alive?"":"opacity:.55"}"><div class="flex"><span class="big">${e.preset}</span>${e.research_name?`<span class="tag">research ${e.research_name}</span>`:""}
+        <span class="mono">default ${Math.round(e.default_keep*100)}% · SLA15=${n15} · SLA25=${n25}${oth?" · "+oth:""}</span>
+        <span class="mono dim">${ranges}</span>
+        ${e.predicted_gen_s_sp2_720p158?`<span class="mono dim">pred. ~${e.predicted_gen_s_sp2_720p158}s (SP-2 720p158)</span>`:""}
+        <span class="mono dim" style="margin-left:auto">${e.host} pid ${e.pid} r${e.rank} gpu ${e.cuda_visible_devices??"?"} · gen #${e.generation} · ${e.t}${e.alive?"":" · exited"}</span></div>
+        <div style="display:grid;grid-template-columns:repeat(${(e.keeps||[]).length},1fr);gap:1px;height:28px;margin-top:3px">${strip}</div>
+        <div class="dim mono" style="font-size:10px">layer 0 → ${(e.keeps||[]).length-1}; colour = keep (green 15%, amber 25%)${ms?"; bar height = measured attention ms/call (H3_SLA_TIMING=1)":""}</div></div>`;}).join("");
+  }).catch(()=>{});
+}
+slaPreset(); setInterval(slaPreset,3000);
 function connect(){const es=new EventSource("/events");es.onmessage=e=>{try{render(JSON.parse(e.data))}catch(_){}};
   es.onerror=()=>{$("dot").classList.remove("on");es.close();setTimeout(connect,2000)};}
 connect();

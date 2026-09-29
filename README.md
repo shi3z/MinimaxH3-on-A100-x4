@@ -117,3 +117,38 @@ bash harness/run_sp2.sh                           # 2-way NVLink pair
 ```
 
 Env: torch 2.13.0+cu130, A100 80GB PCIe sm_80, bf16, SDPA/FA‑2, Triton.
+
+## Layer-selective SLA presets (approximate, opt-in)
+
+Unlike everything above, these trade exactness for speed. They are **off by default**. Nothing changes unless a preset is requested.
+
+| preset | SLA25 layers (rest SLA15) | research name | gen time* | vs Dense |
+|---|---|---|---|---|
+| `quality` | 31-42, 46-49 | E8 | ~27.8 s | ~1.60x |
+| `balanced` | 31-42, 48-49 | T2 | ~27.4 s | ~1.62x |
+| `speed` | 34-42 | E3 | ~26.7 s | ~1.67x |
+
+\*Measured on A100 SP-2 (GPU 4+5), ref2va turbo 4-step, 1280x720x158. Dense ~44.5 s, SLA25 on all layers ~33.0 s.
+
+- **quality**: approximately comparable to SLA25 on all layers in our validation set, at ~1.6x Dense speed.
+- **balanced**: nearly the quality preset. Slightly more fine-texture / night-scene noise risk.
+- **speed**: the fastest recommended preset. It has a visible quality trade-off in large motion, scene structure and fine detail. It is not equal quality.
+
+The validation set is finite: 4 clips (face, large motion, night crowd/fine texture, anime) × 3 seeds. There is no claim of universal superiority over SLA25 on all layers.
+
+**Where the presets live.** The schedules are defined once, in `comfy-h3/custom_nodes/h3_sla` (`PRESETS`). A mirror of that node is kept in this repo at `custom_nodes/h3_sla/`; deploy it by copying it into `comfy-h3/custom_nodes/`. How to select one:
+
+- **ComfyUI node:** `H3SLAPatch(preset=quality|balanced|speed|custom, layer_keep="25:31-42,46-49")`. With `preset=off`, `topk` is uniform, which is the legacy behaviour.
+- **Fleet job JSON:** `"sla_preset": "quality"`. `custom` also needs `"sla_layer_keep": "..."`.
+- **CLI:** `harness/sp_generate.py <job.json> <tag> --sla-preset quality` or `--sla-layer-keep "25:31-42,46-49"`.
+
+**SP runtime.** `harness/sp_runtime.py` applies the same schedule inside Ulysses attention. It does so only when a preset is active, and uses the blocking path. Without a preset, SP attention stays FA2, as before.
+
+**Logging and dashboard.**
+- At each generation start, rank 0 prints the preset, the default keep, the SLA25 ranges and the predicted cost.
+- Status goes to `sp_status/h3_sla/*.json`. The dashboard panel "SLA preset" reads it (`/api/sla_preset`).
+- With `H3_SLA_TIMING=1` the panel also shows per-layer attention ms.
+
+**Predictors.** None. The per-token residual predictors, Global Memory and Engram are research-only and are never loaded.
+
+**Research record.** See `/mnt/ssd/project/newh3/experiments/h3_token_residual/PRESETS.md`. The regression test reproduces the research latents bit-exactly.

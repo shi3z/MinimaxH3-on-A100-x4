@@ -9,7 +9,7 @@ Hierarchy from real CUDA-event events (kind = step | layer | op):
 Real GPU metrics via `nvidia-smi dmon` (sm%, mem%/HBM, pcie rx/tx, power, temp, clocks) + NVLink
 throughput (counter deltas). Tensor-core util is NOT available without DCGM -> reported null.
 
-Endpoints: GET / (html), GET /api/state, GET /events (SSE), POST /emit, POST /bench.
+Endpoints: GET / (html), GET /api/state, GET /api/sla_preset, GET /events (SSE), POST /emit, POST /bench.
 Loads dashboard/run_capture.jsonl on startup so a captured run is visible immediately.
 """
 import os, json, time, threading, subprocess, collections
@@ -396,6 +396,8 @@ class H(BaseHTTPRequestHandler):
             self._send(200, open(os.path.join(HERE, "mdx.html"), "rb").read(), "text/html; charset=utf-8")
         elif self.path == "/api/mdx":
             self._send(200, json.dumps(mdx_snapshot()))
+        elif self.path == "/api/sla_preset":
+            self._send(200, json.dumps(sla_preset_snapshot()))
         elif self.path == "/api/state":
             self._send(200, json.dumps(snapshot()))
         elif self.path == "/events":
@@ -432,6 +434,25 @@ def _load_capture():
             print(f"[h3-dashboard] loaded {len(evs)} captured events from run_capture.jsonl", flush=True)
         except Exception as e:
             print("capture load failed:", e, flush=True)
+
+SLA_STATUS_DIR = "/mnt/ssdraid/project/h3-opt/sp_status/h3_sla"   # written by comfy-h3/custom_nodes/h3_sla (per process)
+
+def sla_preset_snapshot():
+    """Active per-layer SLA presets (quality/balanced/speed/custom) reported by h3_sla, newest first."""
+    out = []
+    try:
+        for f in sorted(os.listdir(SLA_STATUS_DIR)):
+            if not f.endswith(".json"): continue
+            try: d = json.load(open(os.path.join(SLA_STATUS_DIR, f)))
+            except Exception: continue
+            try: os.kill(int(d.get("pid", -1)), 0); d["alive"] = True
+            except Exception: d["alive"] = False
+            d["mtime"] = os.path.getmtime(os.path.join(SLA_STATUS_DIR, f))
+            out.append(d)
+    except FileNotFoundError:
+        pass
+    out.sort(key=lambda d: (not d["alive"], -d["mtime"]))
+    return {"entries": out[:12]}
 
 def _bind_ip(pref):
     if pref and pref != "auto": return pref
