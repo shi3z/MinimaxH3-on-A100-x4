@@ -353,6 +353,32 @@ def snapshot():
                 "warnings": _warnings(run, rep, mg)})
     return out
 
+# ---------------- Memory Distillation (experiments/h3_memory_distill) ----------------
+MDX_HIST = 3000
+_mdx = {"run": None, "iters": collections.deque(maxlen=MDX_HIST), "vals": []}
+
+def mdx_ingest(ev):
+    with _lock:
+        k = ev.get("kind")
+        if k == "run":
+            _mdx["run"] = ev; _mdx["iters"].clear(); _mdx["vals"] = []
+        elif k == "iter":
+            _mdx["iters"].append(ev)
+        elif k == "val":
+            _mdx["vals"].append(ev)
+
+def mdx_snapshot():
+    with _lock:
+        its = list(_mdx["iters"]); run = _mdx["run"]; vals = list(_mdx["vals"])
+        gpus = [dict(_gpu[i]) for i in sorted(_gpu) if i >= 0]
+    light_keys = ("step", "ts", "sigma", "iteration_total_ms", "teacher_forward_ms", "student_forward_ms", "backward_ms",
+                  "grad_sync_ms", "optimizer_ms", "SLA15_ms", "SLA25_ms", "dense_attn_ms", "global_memory_build_ms",
+                  "global_memory_query_ms", "global_memory_comm_ms", "engram_keygen_ms", "engram_lookup_ms",
+                  "engram_comm_ms", "loss", "nmse", "peak_alloc_gb", "gpu")
+    light = [{k: e.get(k) for k in light_keys} for e in _decimate(its, 600)]
+    return {"ts": time.time(), "run": run, "iters": light, "last": (its[-1] if its else None),
+            "vals": vals, "gpus": gpus, "n_iters": len(its)}
+
 # ---------------- HTTP ----------------
 class H(BaseHTTPRequestHandler):
     def log_message(self, fmt, *a): pass
@@ -366,6 +392,10 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/" or self.path.startswith("/index"):
             self._send(200, open(os.path.join(HERE, "index.html"), "rb").read(), "text/html; charset=utf-8")
+        elif self.path.startswith("/mdx"):
+            self._send(200, open(os.path.join(HERE, "mdx.html"), "rb").read(), "text/html; charset=utf-8")
+        elif self.path == "/api/mdx":
+            self._send(200, json.dumps(mdx_snapshot()))
         elif self.path == "/api/state":
             self._send(200, json.dumps(snapshot()))
         elif self.path == "/events":
@@ -386,6 +416,8 @@ class H(BaseHTTPRequestHandler):
         except Exception: self._send(400, '{"error":"bad json"}'); return
         if self.path == "/emit":
             ingest(body.get("events", []) if isinstance(body, dict) else body); self._send(200, '{"ok":true}')
+        elif self.path == "/mdx/emit":
+            mdx_ingest(body if isinstance(body, dict) else {}); self._send(200, '{"ok":true}')
         elif self.path == "/bench":
             with _lock: _bench.append(body); _save_bench()
             self._send(200, '{"ok":true}')
